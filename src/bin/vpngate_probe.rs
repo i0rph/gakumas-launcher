@@ -105,6 +105,14 @@ fn run() -> Result<(), String> {
             }
         };
         let mut stack = TunnelStack::new(tun)?;
+        let t_dns = Instant::now();
+        match stack.resolve_in_tunnel(http::DMM_HOST) {
+            Ok(ip) => println!(
+                "    DMM 주소 (터널 안 DNS): {ip} ({} ms)",
+                t_dns.elapsed().as_millis()
+            ),
+            Err(e) => println!("    터널 안 DNS 실패, 시스템 DNS 사용: {e}"),
+        }
 
         println!("\n[3] 터널 안에서 접속 국가 확인 (ipinfo.io, 평문 HTTP)");
         let t1 = Instant::now();

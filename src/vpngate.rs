@@ -60,8 +60,107 @@ pub fn japan_tcp_candidates(body: &str) -> Vec<(Server, OvpnConfig)> {
     v
 }
 
-/// 서버 목록 CSV 원문 (캐시 파일에 저장해 두고 재사용하기 위함)
+/// 서버 목록 CSV 원문 (캐시 파일에 저장해 두고 재사용하기 위함).
+/// 일반 HTTP 가 막힌 네트워크가 있어 실패하면 HTTPS 로 한 번 더 받음
 pub fn fetch_server_list_raw() -> Result<String, String> {
+    let http_err = match fetch_http() {
+        Ok(body) => return Ok(body),
+        Err(e) => e,
+    };
+    fetch_https().map_err(|e| format!("HTTP: {http_err} / HTTPS: {e}"))
+}
+
+/// 디버그 빌드에서만: GAKUMAS_TEST_LIST_FAIL=http|all 이면 목록 받기를 실패시킴 (차단된 네트워크 흉내)
+fn simulated_failure(kind: &str) -> Result<(), String> {
+    if cfg!(debug_assertions)
+        && std::env::var("GAKUMAS_TEST_LIST_FAIL").is_ok_and(|v| v == kind || v == "all")
+    {
+        return Err("simulated failure".into());
+    }
+    Ok(())
+}
+
+fn check_list(body: String) -> Result<String, String> {
+    if !body.contains("*vpn_servers") && !body.contains("#HostName") {
+        return Err("unexpected server list response".into());
+    }
+    Ok(body)
+}
+
+/// www.vpngate.net 은 TLS 1.2 CBC 암호만 받아 rustls 로는 연결되지 않으므로 Windows TLS(schannel)를 씀
+fn fetch_https() -> Result<String, String> {
+    simulated_failure("https")?;
+    let tls = native_tls::TlsConnector::new().map_err(|e| format!("TLS: {e}"))?;
+    let resp = ureq::AgentBuilder::new()
+        .tls_connector(std::sync::Arc::new(tls))
+        .timeout_connect(Duration::from_secs(15))
+        .timeout_read(Duration::from_secs(60))
+        .build()
+        .get("https://www.vpngate.net/api/iphone/")
+        .set("User-Agent", "Mozilla/5.0")
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("HTTP {code}"),
+            ureq::Error::Transport(t) => t.to_string(),
+        })?;
+    let mut body = String::new();
+    resp.into_reader()
+        .take(32 * 1024 * 1024)
+        .read_to_string(&mut body)
+        .map_err(|e| format!("receive: {e}"))?;
+    check_list(body)
+}
+
+/// 쓰쿠바대가 직접 운영하는 일본 서버 (호스트 이름, 마지막으로 확인한 IP).
+/// 서버 목록을 받을 수 없을 때만 씀. IP 는 먼저 DNS 로 다시 찾아봄
+const BUILTIN_OFFICIAL: &[(&str, &str)] = &[
+    ("public-vpn-162", "219.100.37.125"),
+    ("public-vpn-42", "219.100.37.6"),
+    ("public-vpn-127", "219.100.37.63"),
+    ("public-vpn-150", "219.100.37.108"),
+    ("public-vpn-214", "219.100.37.204"),
+    ("public-vpn-210", "219.100.37.198"),
+    ("public-vpn-61", "219.100.37.51"),
+    ("public-vpn-81", "219.100.37.28"),
+    ("public-vpn-142", "219.100.37.114"),
+];
+
+/// 모든 VPN Gate 서버가 같이 쓰는 접속 설정 (CA·클라이언트 인증서·키). 접속 주소만 바꿔 씀
+const BUILTIN_PROFILE: &str = include_str!("vpngate_builtin.ovpn");
+
+/// 서버 목록 없이 쓸 수 있는 쓰쿠바대 서버들
+pub fn builtin_official_servers() -> Vec<(Server, OvpnConfig)> {
+    let Ok(base) = parse_config(BUILTIN_PROFILE) else {
+        return Vec::new();
+    };
+    BUILTIN_OFFICIAL
+        .iter()
+        .map(|&(host, known_ip)| {
+            let server = Server {
+                host_name: host.to_string(),
+                ip: known_ip.to_string(),
+                score: 0,
+                country: "JP".into(),
+                config_text: String::new(),
+            };
+            let mut cfg = base.clone();
+            cfg.remote_ip = known_ip.to_string();
+            (server, cfg)
+        })
+        .collect()
+}
+
+/// 내장 서버의 현재 IP 를 DNS 로 찾음 (못 찾으면 그대로). 서버 인증서로 확인하므로 틀린 IP 면 연결이 실패할 뿐임
+pub fn refresh_builtin_ip(server: &Server, cfg: &mut OvpnConfig) {
+    if let Ok(mut addrs) = (server.tls_name().as_str(), 443).to_socket_addrs() {
+        if let Some(a) = addrs.find(|a| a.is_ipv4()) {
+            cfg.remote_ip = a.ip().to_string();
+        }
+    }
+}
+
+fn fetch_http() -> Result<String, String> {
+    simulated_failure("http")?;
     let addr = ("www.vpngate.net", 80)
         .to_socket_addrs()
         .map_err(|e| format!("DNS: {e}"))?
@@ -80,10 +179,7 @@ pub fn fetch_server_list_raw() -> Result<String, String> {
         .split_once("\r\n\r\n")
         .map(|(_, b)| b)
         .ok_or("malformed HTTP response")?;
-    if !body.contains("*vpn_servers") && !body.contains("#HostName") {
-        return Err("unexpected server list response".into());
-    }
-    Ok(body.to_string())
+    check_list(body.to_string())
 }
 
 pub fn parse_server_list(body: &str) -> Vec<Server> {

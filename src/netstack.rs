@@ -2,7 +2,7 @@
 //!
 //! Windows 네트워크 설정을 건드리지 않고, 이 프로그램이 여는 TCP 연결만 VPN 터널을 탑니다.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::sync::Arc;
@@ -84,7 +84,15 @@ pub struct TunnelStack {
     iface: Interface,
     sockets: SocketSet<'static>,
     epoch: Instant,
+    /// 터널 안에서 찾은 주소 (일본 쪽에서 본 주소)
+    hosts: HashMap<String, Ipv4Addr>,
 }
+
+/// 터널 안에서 쓰는 DNS-over-HTTPS (주소, TLS 이름, 경로). 시스템 DNS 를 거치지 않도록 IP 로 접속
+const DOH_SERVERS: &[([u8; 4], &str, &str)] = &[
+    ([8, 8, 8, 8], "dns.google", "/resolve"),
+    ([1, 1, 1, 1], "cloudflare-dns.com", "/dns-query"),
+];
 
 pub fn resolve_v4(host: &str) -> Result<Ipv4Addr, String> {
     (host, 0)
@@ -127,7 +135,49 @@ impl TunnelStack {
             iface,
             sockets: SocketSet::new(Vec::new()),
             epoch: Instant::now(),
+            hosts: HashMap::new(),
         })
+    }
+
+    /// `host` 의 주소를 터널 안에서(일본 쪽 DNS 로) 찾아 이후 요청에 씀.
+    /// CDN 은 묻는 쪽 위치에 따라 다른 서버를 알려 주는데, 한국 쪽 서버는 VPN Gate 에서 연결되지 않을 수 있음
+    pub fn resolve_in_tunnel(&mut self, host: &str) -> Result<Ipv4Addr, String> {
+        let mut errors = Vec::new();
+        for &(ip, name, path) in DOH_SERVERS {
+            let req = format!(
+                "GET {path}?name={host}&type=A HTTP/1.1\r\nHost: {name}\r\n\
+                 Accept: application/dns-json\r\nConnection: close\r\n\r\n"
+            );
+            let answer = self
+                .request_ip(
+                    Ipv4Addr::from(ip),
+                    name,
+                    443,
+                    Some(http::dmm_tls_config()),
+                    req.as_bytes(),
+                    Duration::from_secs(10),
+                )
+                .and_then(|raw| http::parse_response(&raw))
+                .and_then(|(_, body)| {
+                    let v: serde_json::Value =
+                        serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+                    v["Answer"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|a| a["type"] == 1)
+                        .find_map(|a| a["data"].as_str()?.parse::<Ipv4Addr>().ok())
+                        .ok_or_else(|| "no A record".to_string())
+                });
+            match answer {
+                Ok(addr) => {
+                    self.hosts.insert(host.to_string(), addr);
+                    return Ok(addr);
+                }
+                Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        Err(errors.join(" / "))
     }
 
     fn now(&self) -> SmolInstant {
@@ -163,7 +213,24 @@ impl TunnelStack {
         req: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
-        let ip = resolve_v4(host)?.octets();
+        let ip = match self.hosts.get(host) {
+            Some(ip) => *ip,
+            None => resolve_v4(host)?,
+        };
+        self.request_ip(ip, host, port, tls, req, timeout)
+    }
+
+    /// `ip` 로 접속해 `host` 이름으로 HTTP(S) 요청
+    fn request_ip(
+        &mut self,
+        ip: Ipv4Addr,
+        host: &str,
+        port: u16,
+        tls: Option<Arc<ClientConfig>>,
+        req: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
+        let ip = ip.octets();
         let mut sock = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; 65535]),
             tcp::SocketBuffer::new(vec![0u8; 65535]),

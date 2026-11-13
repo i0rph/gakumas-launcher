@@ -387,7 +387,7 @@ fn try_servers(
             continue;
         }
         progress(&format!("VPN 연결 중 · {}", server.host_name), None);
-        match Tunnel::connect(cfg, &server.tls_name(), &mut |_| {}).and_then(TunnelStack::new) {
+        match connect_tunnel(cfg, &server.tls_name(), progress) {
             Ok(stack) => return Some((stack, server.host_name.clone())),
             Err(e) => progress(&format!("{} 연결 실패: {e}", server.host_name), None),
         }
@@ -395,32 +395,108 @@ fn try_servers(
     None
 }
 
+/// 터널을 열고 DMM 주소를 터널 안에서(일본 쪽 DNS 로) 찾아 둠.
+/// 한국 등에서 받은 CDN 주소는 VPN Gate 쪽에서 연결되지 않을 수 있음. 못 찾으면 시스템 DNS 그대로 씀
+fn connect_tunnel(
+    cfg: &vpngate::OvpnConfig,
+    tls_name: &str,
+    progress: ProgressFn,
+) -> Result<TunnelStack, String> {
+    let mut stack = Tunnel::connect(cfg, tls_name, &mut |_| {}).and_then(TunnelStack::new)?;
+    if let Err(e) = stack.resolve_in_tunnel(DMM_HOST) {
+        progress(&format!("일본 DNS 조회 실패, 기본 DNS 사용 ({e})"), None);
+    }
+    Ok(stack)
+}
+
+/// 프로그램에 내장된 쓰쿠바대 서버로 시도 (서버 목록을 받을 수 없는 네트워크용).
+/// 마지막으로 확인한 IP 로 먼저 시도하고, 안 되면 DNS 로 찾은 IP 로 한 번 더
+fn try_builtin(tried: &mut HashSet<String>, progress: ProgressFn) -> Option<(TunnelStack, String)> {
+    let mut count = 0;
+    for (server, mut cfg) in vpngate::builtin_official_servers() {
+        if count >= VPNGATE_OFFICIAL_TRIES {
+            break;
+        }
+        if !tried.insert(server.host_name.clone()) {
+            continue;
+        }
+        count += 1;
+        progress(&format!("VPN 연결 중 · {}", server.host_name), None);
+        let connect = |cfg: &vpngate::OvpnConfig| connect_tunnel(cfg, &server.tls_name(), progress);
+        let mut result = connect(&cfg);
+        if result.is_err() {
+            let known = cfg.remote_ip.clone();
+            vpngate::refresh_builtin_ip(&server, &mut cfg);
+            if cfg.remote_ip != known {
+                result = connect(&cfg);
+            }
+        }
+        match result {
+            Ok(stack) => return Some((stack, server.host_name)),
+            Err(e) => progress(&format!("{} 연결 실패: {e}", server.host_name), None),
+        }
+    }
+    None
+}
+
+/// 목록에서 아직 시도하지 않은 일본 서버 (쓰쿠바대 서버 먼저, 그다음 점수 순)
+fn untried(
+    body: &str,
+    tried: &HashSet<String>,
+    official_only: bool,
+    take: usize,
+) -> Vec<(vpngate::Server, vpngate::OvpnConfig)> {
+    vpngate::japan_tcp_candidates(body)
+        .into_iter()
+        .filter(|(s, _)| (!official_only || s.is_official()) && !tried.contains(&s.host_name))
+        .take(take)
+        .collect()
+}
+
 /// VPN Gate 일본 서버에 터널을 염. `tried` 에 든 서버(이미 실패했거나 DMM 이 거부한 서버)는 건너뜀.
-/// 저장된 목록의 쓰쿠바대 서버부터 시도하고, 안 되면 목록을 갱신해 나머지 서버를 시도
+/// 1. 저장된 목록의 쓰쿠바대 서버  2. 목록을 갱신해 나머지 서버
+/// 3. 목록을 받지 못하면 저장된 목록(오래됐어도)의 나머지 서버  4. 프로그램에 내장된 쓰쿠바대 서버
 fn open_vpngate(
     store: &Store,
     progress: ProgressFn,
     tried: &mut HashSet<String>,
 ) -> Result<(TunnelStack, String), String> {
-    if let Some(body) = store.cached_vpngate_list() {
-        let official: Vec<_> = vpngate::japan_tcp_candidates(&body)
-            .into_iter()
-            .filter(|(s, _)| s.is_official() && !tried.contains(&s.host_name))
-            .take(VPNGATE_OFFICIAL_TRIES)
-            .collect();
+    let cached = store.cached_vpngate_list();
+    if let Some(body) = &cached {
+        let official = untried(body, tried, true, VPNGATE_OFFICIAL_TRIES);
         if let Some(found) = try_servers(&official, tried, progress) {
             return Ok(found);
         }
     }
     progress("서버 목록 갱신 중", None);
-    let body = store.refresh_vpngate_list(VPNGATE_RECENT)?;
-    let all: Vec<_> = vpngate::japan_tcp_candidates(&body)
-        .into_iter()
-        .filter(|(s, _)| !tried.contains(&s.host_name))
-        .take(VPNGATE_MORE_TRIES)
-        .collect();
-    try_servers(&all, tried, progress).ok_or_else(|| {
+    let list_ok = match store.refresh_vpngate_list(VPNGATE_RECENT) {
+        Ok(body) => {
+            let all = untried(&body, tried, false, VPNGATE_MORE_TRIES);
+            if let Some(found) = try_servers(&all, tried, progress) {
+                return Ok(found);
+            }
+            true
+        }
+        Err(e) => {
+            progress(&e, None);
+            if let Some(body) = &cached {
+                let rest = untried(body, tried, false, VPNGATE_MORE_TRIES);
+                if let Some(found) = try_servers(&rest, tried, progress) {
+                    return Ok(found);
+                }
+            }
+            false
+        }
+    };
+    if let Some(found) = try_builtin(tried, progress) {
+        return Ok(found);
+    }
+    Err(if list_ok {
         "VPN Gate 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.".to_string()
+    } else {
+        "VPN Gate 에 연결하지 못했습니다. 이 네트워크에서 VPN Gate 가 차단된 것 같습니다. \
+         일본 VPN 을 직접 켜고 연결 방식을 '내 VPN' 으로 바꿔 주세요."
+            .to_string()
     })
 }
 

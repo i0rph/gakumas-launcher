@@ -38,7 +38,9 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Plain HTTPS (login API, file list, game file downloads) over the normal connection.
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { version = "2", default-features = false, features = ["tls", "native-tls"] }
+# Windows TLS (schannel) for www.vpngate.net, which only offers TLS 1.2 CBC suites that rustls does not support.
+native-tls = "0.2"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security_Cryptography",
