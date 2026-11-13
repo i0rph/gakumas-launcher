@@ -27,16 +27,23 @@ impl Server {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct OvpnConfig {
-    pub proto: String,
-    pub remote_ip: String,
-    pub port: u16,
-    pub cipher: String,
-    pub auth: String,
-    pub ca_pem: String,
-    pub cert_pem: String,
-    pub key_pem: String,
+pub use crate::openvpn::OvpnConfig;
+
+/// TCP 로 접속하는 설정인지 (VPN Gate 는 TCP 서버만 씀)
+pub fn is_tcp(c: &OvpnConfig) -> bool {
+    c.remotes.first().is_some_and(|r| !r.udp)
+}
+
+/// 설정의 접속 주소를 바꿈
+pub fn set_remote_ip(c: &mut OvpnConfig, ip: &str) {
+    if let Some(r) = c.remotes.first_mut() {
+        r.host = ip.to_string();
+    }
+}
+
+/// 설정의 접속 주소
+pub fn remote_ip(c: &OvpnConfig) -> &str {
+    c.remotes.first().map_or("", |r| r.host.as_str())
 }
 
 /// 서버 목록 CSV 를 받음 (http://www.vpngate.net/api/iphone/)
@@ -50,7 +57,7 @@ pub fn japan_tcp_candidates(body: &str) -> Vec<(Server, OvpnConfig)> {
         .into_iter()
         .filter(|s| s.country == "JP")
         .filter_map(|s| parse_config(&s.config_text).ok().map(|c| (s, c)))
-        .filter(|(_, c)| c.proto.starts_with("tcp"))
+        .filter(|(_, c)| is_tcp(c))
         .collect();
     v.sort_by(|a, b| {
         b.0.is_official()
@@ -144,7 +151,7 @@ pub fn builtin_official_servers() -> Vec<(Server, OvpnConfig)> {
                 config_text: String::new(),
             };
             let mut cfg = base.clone();
-            cfg.remote_ip = known_ip.to_string();
+            set_remote_ip(&mut cfg, known_ip);
             (server, cfg)
         })
         .collect()
@@ -154,7 +161,7 @@ pub fn builtin_official_servers() -> Vec<(Server, OvpnConfig)> {
 pub fn refresh_builtin_ip(server: &Server, cfg: &mut OvpnConfig) {
     if let Ok(mut addrs) = (server.tls_name().as_str(), 443).to_socket_addrs() {
         if let Some(a) = addrs.find(|a| a.is_ipv4()) {
-            cfg.remote_ip = a.ip().to_string();
+            set_remote_ip(cfg, &a.ip().to_string());
         }
     }
 }
@@ -208,50 +215,7 @@ pub fn parse_server_list(body: &str) -> Vec<Server> {
     out
 }
 
-/// OpenVPN 설정 파일에서 필요한 값만 꺼냄
+/// OpenVPN 설정 파일 해석 (VPN Gate 설정도 일반 OpenVPN 설정과 같은 형식)
 pub fn parse_config(text: &str) -> Result<OvpnConfig, String> {
-    let block = |tag: &str| -> Result<String, String> {
-        let open = format!("<{tag}>");
-        let close = format!("</{tag}>");
-        let start = text.find(&open).ok_or(format!("<{tag}> missing"))? + open.len();
-        let end = text[start..]
-            .find(&close)
-            .ok_or(format!("</{tag}> missing"))?
-            + start;
-        Ok(text[start..end].trim().to_string())
-    };
-
-    let mut proto = String::from("udp");
-    let mut remote: Option<(String, u16)> = None;
-    let mut cipher = String::from("BF-CBC");
-    let mut auth = String::from("SHA1");
-    for line in text.lines() {
-        let l = line.trim();
-        if l.starts_with('#') || l.starts_with(';') || l.starts_with('<') {
-            continue;
-        }
-        let mut it = l.split_whitespace();
-        match it.next() {
-            Some("proto") => proto = it.next().unwrap_or("udp").to_ascii_lowercase(),
-            Some("remote") if remote.is_none() => {
-                if let (Some(ip), Some(port)) = (it.next(), it.next()) {
-                    remote = Some((ip.to_string(), port.parse::<u16>().map_err(|_| "bad port")?));
-                }
-            }
-            Some("cipher") => cipher = it.next().unwrap_or("").to_string(),
-            Some("auth") => auth = it.next().unwrap_or("").to_string(),
-            _ => {}
-        }
-    }
-    let (remote_ip, port) = remote.ok_or("remote missing")?;
-    Ok(OvpnConfig {
-        proto,
-        remote_ip,
-        port,
-        cipher,
-        auth,
-        ca_pem: block("ca")?,
-        cert_pem: block("cert")?,
-        key_pem: block("key")?,
-    })
+    OvpnConfig::parse(text)
 }

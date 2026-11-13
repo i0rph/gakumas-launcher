@@ -15,8 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::http::{self, CLIENT_VERSION, DMM_HOST};
-use crate::netstack::TunnelStack;
-use crate::openvpn::Tunnel;
+use crate::netstack::{IpTunnel, TunnelStack};
+use crate::openvpn::{self, ConnectOptions, OvpnConfig, Tunnel};
+use crate::wireguard::{WgConfig, WgTunnel};
 use crate::{dpapi, vpngate, winutil};
 
 pub const PRODUCT_ID: &str = "gakumas";
@@ -35,6 +36,10 @@ pub type CodeFn<'a> = &'a dyn Fn(&str) -> Result<String, String>;
 
 pub const MODE_VPNGATE: &str = "vpngate";
 pub const MODE_DIRECT: &str = "direct";
+/// 사용자의 VPN 설정 파일(.ovpn / WireGuard .conf)로 프로그램 안에서 연결
+pub const MODE_FILE: &str = "file";
+/// 설정 파일의 OpenVPN 서버를 몇 곳까지 시도할지
+const VPN_FILE_TRIES: usize = 5;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Settings {
@@ -74,6 +79,11 @@ impl Default for Settings {
 #[derive(Serialize, Clone, Debug)]
 pub struct Status {
     pub logged_in: bool,
+    /// 가져온 VPN 설정 파일 이름
+    pub vpn_file: Option<String>,
+    /// VPN 설정 파일이 아이디·비밀번호를 요구하는지 / 저장돼 있는지
+    pub vpn_needs_auth: bool,
+    pub vpn_has_auth: bool,
     pub game_path: Option<String>,
     pub game_found: bool,
     pub installed_version: Option<String>,
@@ -82,7 +92,21 @@ pub struct Status {
     pub close_after_launch: bool,
 }
 
-/// 프로그램 데이터 (설정, 암호화된 로그인 토큰, 기기 ID, VPN Gate 목록 캐시)
+pub const VPN_OPENVPN: &str = "openvpn";
+pub const VPN_WIREGUARD: &str = "wireguard";
+
+/// 사용자가 가져온 VPN 설정 파일
+#[derive(Serialize, Deserialize, Clone)]
+pub struct VpnFile {
+    pub name: String,
+    /// "openvpn" 또는 "wireguard"
+    pub kind: String,
+    /// 설정 내용 (외부 인증서 파일은 안에 넣어 둠)
+    pub text: String,
+    pub needs_auth: bool,
+}
+
+/// 프로그램 데이터 (설정, 암호화된 로그인 토큰, 기기 ID, VPN Gate 목록 캐시, VPN 설정 파일)
 pub struct Store {
     dir: PathBuf,
     vpngate_lock: Mutex<()>,
@@ -174,6 +198,68 @@ impl Store {
         fs::write(self.file("login.dat"), blob).map_err(|e| format!("로그인 토큰 저장 실패: {e}"))
     }
 
+    /// 가져온 VPN 설정 파일 (개인 키가 들어 있어 DPAPI 로 암호화해 둠)
+    pub fn vpn_file(&self) -> Option<VpnFile> {
+        let blob = fs::read(self.file("vpn_file.dat")).ok()?;
+        serde_json::from_slice(&dpapi::unprotect(&blob).ok()?).ok()
+    }
+
+    /// VPN 설정 파일을 읽어 확인하고 저장. 같은 폴더의 인증서·키 파일을 가리키면 내용을 넣어 하나로 만듦
+    pub fn import_vpn_file(&self, path: &Path) -> Result<VpnFile, String> {
+        let meta = fs::metadata(path).map_err(|e| format!("파일을 읽지 못했습니다: {e}"))?;
+        if meta.len() > 1024 * 1024 {
+            return Err("VPN 설정 파일이 너무 큽니다".into());
+        }
+        let text = fs::read_to_string(path).map_err(|e| format!("파일을 읽지 못했습니다: {e}"))?;
+        let text = text.trim_start_matches('\u{feff}');
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let file = if text.contains("[Interface]") {
+            WgConfig::parse(text)?;
+            VpnFile {
+                name,
+                kind: VPN_WIREGUARD.into(),
+                text: text.to_string(),
+                needs_auth: false,
+            }
+        } else {
+            let dir = path.parent().unwrap_or(Path::new("."));
+            let (inlined, creds) = openvpn::inline_external_files(text, dir)?;
+            let cfg = OvpnConfig::parse(&inlined)?;
+            if let Some((u, p)) = creds {
+                self.save_vpn_auth(&u, &p)?;
+            }
+            VpnFile {
+                name,
+                kind: VPN_OPENVPN.into(),
+                text: inlined,
+                needs_auth: cfg.auth_user_pass,
+            }
+        };
+        let json = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
+        fs::write(self.file("vpn_file.dat"), dpapi::protect(&json)?)
+            .map_err(|e| format!("VPN 설정 저장 실패: {e}"))?;
+        Ok(file)
+    }
+
+    /// VPN 아이디·비밀번호 (OpenVPN auth-user-pass)
+    pub fn vpn_auth(&self) -> Option<(String, String)> {
+        let blob = fs::read(self.file("vpn_auth.dat")).ok()?;
+        let v: Value = serde_json::from_slice(&dpapi::unprotect(&blob).ok()?).ok()?;
+        Some((
+            v["username"].as_str()?.to_string(),
+            v["password"].as_str()?.to_string(),
+        ))
+    }
+
+    pub fn save_vpn_auth(&self, username: &str, password: &str) -> Result<(), String> {
+        let json = json!({ "username": username, "password": password }).to_string();
+        fs::write(self.file("vpn_auth.dat"), dpapi::protect(json.as_bytes())?)
+            .map_err(|e| format!("VPN 계정 저장 실패: {e}"))
+    }
+
     /// 저장된 토큰이 아직 `token` 일 때만 삭제 (그사이 새로 로그인했으면 그대로 둠)
     pub fn clear_token_if(&self, token: &str) -> Result<(), String> {
         if self.token().as_deref() == Some(token) {
@@ -229,6 +315,7 @@ impl Store {
 
     pub fn status(&self) -> Status {
         let s = self.settings();
+        let vpn = self.vpn_file();
         let game_found = s
             .game_path
             .as_ref()
@@ -236,6 +323,9 @@ impl Store {
             .unwrap_or(false);
         Status {
             logged_in: self.token().is_some(),
+            vpn_file: vpn.as_ref().map(|v| v.name.clone()),
+            vpn_needs_auth: vpn.as_ref().is_some_and(|v| v.needs_auth),
+            vpn_has_auth: self.vpn_auth().is_some(),
             game_path: s.game_path,
             game_found,
             installed_version: s.installed_version,
@@ -373,6 +463,10 @@ fn open_japan_link(
     if mode == MODE_DIRECT {
         return Ok((JapanLink::Direct, None));
     }
+    if mode == MODE_FILE {
+        let stack = open_vpn_file(store, progress)?;
+        return Ok((JapanLink::Tunnel(Box::new(stack)), None));
+    }
     let (stack, host) = open_vpngate(store, progress, tried)?;
     Ok((JapanLink::Tunnel(Box::new(stack)), Some(host)))
 }
@@ -402,11 +496,62 @@ fn connect_tunnel(
     tls_name: &str,
     progress: ProgressFn,
 ) -> Result<TunnelStack, String> {
-    let mut stack = Tunnel::connect(cfg, tls_name, &mut |_| {}).and_then(TunnelStack::new)?;
+    let tun = Tunnel::connect(cfg, tls_name, &mut |_| {})?;
+    stack_with_japan_dns(tun, progress)
+}
+
+/// 터널 위에 TCP/IP 스택을 올리고 DMM 주소를 터널 안에서 찾아 둠
+fn stack_with_japan_dns<T: IpTunnel + 'static>(
+    tun: T,
+    progress: ProgressFn,
+) -> Result<TunnelStack, String> {
+    let mut stack = TunnelStack::new(tun)?;
     if let Err(e) = stack.resolve_in_tunnel(DMM_HOST) {
         progress(&format!("일본 DNS 조회 실패, 기본 DNS 사용 ({e})"), None);
     }
     Ok(stack)
+}
+
+/// 사용자가 가져온 VPN 설정 파일로 연결
+fn open_vpn_file(store: &Store, progress: ProgressFn) -> Result<TunnelStack, String> {
+    let file = store.vpn_file().ok_or("VPN 설정 파일을 선택하세요")?;
+    if file.kind == VPN_WIREGUARD {
+        let cfg = WgConfig::parse(&file.text)?;
+        progress(&format!("VPN 연결 중 · {}", file.name), None);
+        let tun = WgTunnel::connect(&cfg, &mut |_| {})?;
+        return stack_with_japan_dns(tun, progress);
+    }
+    let cfg = OvpnConfig::parse(&file.text)?;
+    let creds = if cfg.auth_user_pass {
+        Some(
+            store
+                .vpn_auth()
+                .ok_or("VPN 아이디와 비밀번호를 입력하세요")?,
+        )
+    } else {
+        None
+    };
+    let mut last = String::from("VPN 서버에 연결하지 못했습니다");
+    for remote in cfg.remote_order().iter().take(VPN_FILE_TRIES) {
+        progress(&format!("VPN 연결 중 · {}", remote.host), None);
+        let opts = ConnectOptions {
+            remote,
+            tls_name: &remote.host,
+            strict_verify: true,
+            credentials: creds.as_ref().map(|(u, p)| (u.as_str(), p.as_str())),
+        };
+        match Tunnel::connect_with(&cfg, &opts, &mut |_| {}) {
+            Ok(tun) => return stack_with_japan_dns(tun, progress),
+            Err(e) if e.contains("AUTH_FAILED") => {
+                return Err("VPN 아이디 또는 비밀번호가 맞지 않습니다".into())
+            }
+            Err(e) => {
+                progress(&format!("{} 연결 실패: {e}", remote.host), None);
+                last = format!("VPN 서버에 연결하지 못했습니다 ({e})");
+            }
+        }
+    }
+    Err(last)
 }
 
 /// 프로그램에 내장된 쓰쿠바대 서버로 시도 (서버 목록을 받을 수 없는 네트워크용).
@@ -425,9 +570,9 @@ fn try_builtin(tried: &mut HashSet<String>, progress: ProgressFn) -> Option<(Tun
         let connect = |cfg: &vpngate::OvpnConfig| connect_tunnel(cfg, &server.tls_name(), progress);
         let mut result = connect(&cfg);
         if result.is_err() {
-            let known = cfg.remote_ip.clone();
+            let known = vpngate::remote_ip(&cfg).to_string();
             vpngate::refresh_builtin_ip(&server, &mut cfg);
-            if cfg.remote_ip != known {
+            if vpngate::remote_ip(&cfg) != known {
                 result = connect(&cfg);
             }
         }
@@ -495,7 +640,7 @@ fn open_vpngate(
         "VPN Gate 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.".to_string()
     } else {
         "VPN Gate 에 연결하지 못했습니다. 이 네트워크에서 VPN Gate 가 차단된 것 같습니다. \
-         일본 VPN 을 직접 켜고 연결 방식을 '내 VPN' 으로 바꿔 주세요."
+         일본 VPN 을 직접 켜고 연결 방식을 '일반 연결' 로 바꿔 주세요."
             .to_string()
     })
 }
@@ -574,6 +719,9 @@ pub fn verify_saved_token(store: &Store) -> Result<TokenCheck, String> {
 fn region_error(mode: &str) -> String {
     if mode == MODE_DIRECT {
         "일본 VPN 이 연결되어 있지 않습니다".into()
+    } else if mode == MODE_FILE {
+        "DMM 이 이 VPN 서버를 거부했습니다. 일본 서버의 설정 파일인지 확인하거나 다른 서버 파일을 써 보세요."
+            .into()
     } else {
         "DMM 이 VPN 서버를 거부했습니다. 잠시 후 다시 시도해 주세요.".into()
     }
@@ -626,7 +774,7 @@ pub fn start_game(
     let data = loop {
         attempts += 1;
         // VPN Gate 서버가 DMM 에 거부당하거나 연결이 끊기면 다른 서버로 다시 시도
-        let can_retry = settings.mode != MODE_DIRECT && attempts < VPNGATE_LAUNCH_ATTEMPTS;
+        let can_retry = settings.mode == MODE_VPNGATE && attempts < VPNGATE_LAUNCH_ATTEMPTS;
         let (mut link, host) = open_japan_link(store, &settings.mode, progress, &mut tried)?;
         progress("실행 준비 중", None);
         let result = link.post("/v5/r2/launch/cl", &body, &token);

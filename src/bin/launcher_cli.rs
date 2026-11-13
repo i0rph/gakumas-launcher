@@ -1,6 +1,7 @@
 //! UI 없이 런처 핵심 흐름을 시험하는 개발용 프로그램
 //!
-//! 사용법: launcher_cli --data-dir <폴더> [--import-ps-token <dmm_login.dat>] [--mode vpngate|direct] [--launch]
+//! 사용법: launcher_cli --data-dir <폴더> [--import-ps-token <dmm_login.dat>] [--mode vpngate|direct|file]
+//!                     [--vpn-file <.ovpn/.conf>] [--vpn-auth-file <아이디·비밀번호 두 줄>] [--launch]
 //! --launch 가 없으면 게임을 실행하지 않고 업데이트도 목록만 확인합니다. 로그인이 필요하면 실패로 끝납니다.
 
 use std::path::PathBuf;
@@ -13,6 +14,8 @@ fn main() {
     let mut import: Option<PathBuf> = None;
     let mut mode: Option<String> = None;
     let mut launch = false;
+    let mut vpn_file: Option<PathBuf> = None;
+    let mut vpn_auth: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -20,6 +23,8 @@ fn main() {
             "--import-ps-token" => import = args.next().map(PathBuf::from),
             "--mode" => mode = args.next(),
             "--launch" => launch = true,
+            "--vpn-file" => vpn_file = args.next().map(PathBuf::from),
+            "--vpn-auth-file" => vpn_auth = args.next().map(PathBuf::from),
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -32,6 +37,23 @@ fn main() {
         let token = dpapi::unprotect_powershell_secure_string(&text).expect("decrypt token");
         store.save_token(&token).expect("save token");
         println!("로그인 토큰을 가져왔습니다 (값은 표시하지 않음)");
+    }
+    if let Some(p) = vpn_file {
+        match store.import_vpn_file(&p) {
+            Ok(f) => println!("VPN 파일을 가져왔습니다: {} ({})", f.name, f.kind),
+            Err(e) => {
+                println!("VPN 파일 오류: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    if let Some(p) = vpn_auth {
+        let c = std::fs::read_to_string(p).expect("read auth file");
+        let mut it = c.lines();
+        let (u, pw) = (it.next().unwrap_or(""), it.next().unwrap_or(""));
+        store
+            .save_vpn_auth(u.trim(), pw.trim_end())
+            .expect("save vpn auth");
     }
     if let Some(m) = mode {
         let mut s = store.settings();

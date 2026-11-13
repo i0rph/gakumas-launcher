@@ -17,14 +17,33 @@ use smoltcp::time::Instant as SmolInstant;
 use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
 
 use crate::http;
-use crate::openvpn::Tunnel;
+/// 사용자 공간 TCP/IP 스택 아래에 놓이는 VPN 터널 (OpenVPN, WireGuard)
+pub trait IpTunnel: Send {
+    fn address(&self) -> TunnelAddr;
+    /// IP 패킷 하나를 암호화해 보냄
+    fn send_ip(&mut self, ip: &[u8]) -> Result<(), String>;
+    /// 서버에서 온 패킷을 최대 `wait` 동안 기다려 처리
+    fn pump(&mut self, wait: Duration) -> Result<(), String>;
+    /// 복호화된 IP 패킷 하나를 꺼냄
+    fn take_inbound(&mut self) -> Option<Vec<u8>>;
+}
 
-/// 터널 안 IP 패킷 최대 크기. 작게 잡아 TCP 세그먼트가 터널에서 잘리지 않게 함
-const MTU: usize = 1350;
+/// 터널 안에서 이 프로그램이 쓰는 주소
+#[derive(Clone, Debug)]
+pub struct TunnelAddr {
+    pub local_ip: [u8; 4],
+    pub prefix_len: u8,
+    pub gateway: Option<[u8; 4]>,
+    /// 터널 안 IP 패킷 최대 크기. 작게 잡아 TCP 세그먼트가 터널에서 잘리지 않게 함
+    pub mtu: usize,
+    /// 터널이 알려 준 DNS 서버 (OpenVPN dhcp-option DNS, WireGuard DNS)
+    pub dns: Vec<[u8; 4]>,
+}
 
 struct QueueDevice {
     rx: VecDeque<Vec<u8>>,
     tx: VecDeque<Vec<u8>>,
+    mtu: usize,
 }
 
 struct RxTok(Vec<u8>);
@@ -73,19 +92,81 @@ impl Device for QueueDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut c = DeviceCapabilities::default();
         c.medium = Medium::Ip;
-        c.max_transmission_unit = MTU;
+        c.max_transmission_unit = self.mtu;
         c
     }
 }
 
 pub struct TunnelStack {
-    tun: Tunnel,
+    tun: Box<dyn IpTunnel>,
     dev: QueueDevice,
     iface: Interface,
     sockets: SocketSet<'static>,
     epoch: Instant,
     /// 터널 안에서 찾은 주소 (일본 쪽에서 본 주소)
     hosts: HashMap<String, Ipv4Addr>,
+    dns: Vec<[u8; 4]>,
+}
+
+/// DNS-over-TCP 질의 (2바이트 길이 + DNS 메시지, A 레코드)
+fn dns_query(host: &str, id: [u8; 2]) -> Vec<u8> {
+    let mut m = vec![id[0], id[1], 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+    for label in host.trim_end_matches('.').split('.') {
+        m.push(label.len() as u8);
+        m.extend_from_slice(label.as_bytes());
+    }
+    m.extend_from_slice(&[0, 0, 1, 0, 1]);
+    [(m.len() as u16).to_be_bytes().to_vec(), m].concat()
+}
+
+fn dns_tcp_complete(r: &[u8]) -> bool {
+    r.len() >= 2 && r.len() >= 2 + u16::from_be_bytes([r[0], r[1]]) as usize
+}
+
+/// DNS 응답 이름 건너뛰기 (압축 포인터 포함)
+fn dns_skip_name(m: &[u8], mut off: usize) -> Option<usize> {
+    loop {
+        let len = *m.get(off)? as usize;
+        if len == 0 {
+            return Some(off + 1);
+        }
+        if len & 0xC0 == 0xC0 {
+            return Some(off + 2);
+        }
+        off += 1 + len;
+    }
+}
+
+/// DNS-over-TCP 응답에서 첫 A 레코드
+fn dns_answer(raw: &[u8], id: [u8; 2]) -> Result<Ipv4Addr, String> {
+    let m = raw.get(2..).ok_or("short DNS response")?;
+    if m.len() < 12 || m[0..2] != id {
+        return Err("bad DNS response".into());
+    }
+    if m[3] & 0x0F != 0 {
+        return Err(format!("DNS error code {}", m[3] & 0x0F));
+    }
+    let qd = u16::from_be_bytes([m[4], m[5]]);
+    let an = u16::from_be_bytes([m[6], m[7]]);
+    let mut off = 12;
+    for _ in 0..qd {
+        off = dns_skip_name(m, off).ok_or("bad DNS response")? + 4;
+    }
+    for _ in 0..an {
+        off = dns_skip_name(m, off).ok_or("bad DNS response")?;
+        let h = m.get(off..off + 10).ok_or("bad DNS response")?;
+        let (rtype, rdlen) = (
+            u16::from_be_bytes([h[0], h[1]]),
+            u16::from_be_bytes([h[8], h[9]]) as usize,
+        );
+        off += 10;
+        if rtype == 1 && rdlen == 4 {
+            let a = m.get(off..off + 4).ok_or("bad DNS response")?;
+            return Ok(Ipv4Addr::new(a[0], a[1], a[2], a[3]));
+        }
+        off += rdlen;
+    }
+    Err("no A record".into())
 }
 
 /// 터널 안에서 쓰는 DNS-over-HTTPS (주소, TLS 이름, 경로). 시스템 DNS 를 거치지 않도록 IP 로 접속
@@ -106,12 +187,13 @@ pub fn resolve_v4(host: &str) -> Result<Ipv4Addr, String> {
 }
 
 impl TunnelStack {
-    pub fn new(tun: Tunnel) -> Result<Self, String> {
-        let push = tun.push.clone().ok_or("tunnel has no address")?;
+    pub fn new<T: IpTunnel + 'static>(tun: T) -> Result<Self, String> {
+        let push = tun.address();
         let ip = push.local_ip;
         let mut dev = QueueDevice {
             rx: VecDeque::new(),
             tx: VecDeque::new(),
+            mtu: push.mtu,
         };
         let mut cfg = Config::new(HardwareAddress::Ip);
         let mut seed = [0u8; 8];
@@ -124,18 +206,22 @@ impl TunnelStack {
                 push.prefix_len,
             ));
         });
-        let gw = push.gateway.unwrap_or([ip[0], ip[1], ip[2], 1]);
+        // WireGuard 처럼 게이트웨이가 없는 터널은 같은 대역의 .1 을 씀 (IP 장치라 실제로 쓰이지는 않음)
+        let gw = push
+            .gateway
+            .unwrap_or([ip[0], ip[1], ip[2], if ip[3] == 1 { 2 } else { 1 }]);
         iface
             .routes_mut()
             .add_default_ipv4_route(Ipv4Address::new(gw[0], gw[1], gw[2], gw[3]))
             .map_err(|e| format!("route: {e:?}"))?;
         Ok(Self {
-            tun,
+            tun: Box::new(tun),
             dev,
             iface,
             sockets: SocketSet::new(Vec::new()),
             epoch: Instant::now(),
             hosts: HashMap::new(),
+            dns: push.dns.clone(),
         })
     }
 
@@ -155,7 +241,7 @@ impl TunnelStack {
                     443,
                     Some(http::dmm_tls_config()),
                     req.as_bytes(),
-                    Duration::from_secs(10),
+                    Duration::from_secs(6),
                 )
                 .and_then(|raw| http::parse_response(&raw))
                 .and_then(|(_, body)| {
@@ -175,6 +261,40 @@ impl TunnelStack {
                     return Ok(addr);
                 }
                 Err(e) => errors.push(format!("{name}: {e}")),
+            }
+        }
+        // DoH 가 막힌 VPN(광고 차단 기능 등)도 있어, 터널이 알려 준 DNS 와 공개 DNS 에 TCP 로 직접 물어봄
+        let mut servers = self.dns.clone();
+        for s in [[8, 8, 8, 8], [1, 1, 1, 1]] {
+            if !servers.contains(&s) {
+                servers.push(s);
+            }
+        }
+        for s in servers {
+            let server = Ipv4Addr::from(s);
+            let id: [u8; 2] = {
+                let mut b = [0u8; 2];
+                getrandom::getrandom(&mut b).map_err(|e| e.to_string())?;
+                b
+            };
+            let query = dns_query(host, id);
+            let answer = self
+                .request_ip_until(
+                    server,
+                    "",
+                    53,
+                    None,
+                    &query,
+                    Duration::from_secs(6),
+                    dns_tcp_complete,
+                )
+                .and_then(|raw| dns_answer(&raw, id));
+            match answer {
+                Ok(addr) => {
+                    self.hosts.insert(host.to_string(), addr);
+                    return Ok(addr);
+                }
+                Err(e) => errors.push(format!("DNS {server}: {e}")),
             }
         }
         Err(errors.join(" / "))
@@ -230,6 +350,21 @@ impl TunnelStack {
         req: &[u8],
         timeout: Duration,
     ) -> Result<Vec<u8>, String> {
+        self.request_ip_until(ip, host, port, tls, req, timeout, http::is_complete)
+    }
+
+    /// `ip` 로 접속해 요청을 보내고, `complete` 가 참이 되거나 연결이 닫힐 때까지 응답을 받음
+    #[allow(clippy::too_many_arguments)]
+    fn request_ip_until(
+        &mut self,
+        ip: Ipv4Addr,
+        host: &str,
+        port: u16,
+        tls: Option<Arc<ClientConfig>>,
+        req: &[u8],
+        timeout: Duration,
+        complete: fn(&[u8]) -> bool,
+    ) -> Result<Vec<u8>, String> {
         let ip = ip.octets();
         let mut sock = tcp::Socket::new(
             tcp::SocketBuffer::new(vec![0u8; 65535]),
@@ -245,7 +380,7 @@ impl TunnelStack {
         )
         .map_err(|e| format!("TCP connect: {e:?}"))?;
         let h = self.sockets.add(sock);
-        let result = self.exchange(h, host, tls, req, timeout);
+        let result = self.exchange(h, host, tls, req, timeout, complete);
         self.sockets.get_mut::<tcp::Socket>(h).abort();
         let _ = self.step();
         self.sockets.remove(h);
@@ -259,6 +394,7 @@ impl TunnelStack {
         tls: Option<Arc<ClientConfig>>,
         req: &[u8],
         timeout: Duration,
+        complete: fn(&[u8]) -> bool,
     ) -> Result<Vec<u8>, String> {
         let deadline = Instant::now() + timeout;
         let mut conn = match tls {
@@ -339,7 +475,7 @@ impl TunnelStack {
                     None => resp.extend_from_slice(&buf[..n]),
                 }
             }
-            if http::is_complete(&resp) || tls_closed {
+            if complete(&resp) || tls_closed {
                 return Ok(resp);
             }
             let remote_closed = matches!(

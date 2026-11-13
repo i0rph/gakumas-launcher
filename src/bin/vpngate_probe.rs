@@ -67,7 +67,7 @@ fn run() -> Result<(), String> {
         .into_iter()
         .filter(|s| s.country == "JP")
         .filter_map(|s| vpngate::parse_config(&s.config_text).ok().map(|c| (s, c)))
-        .filter(|(_, c)| c.proto.starts_with("tcp"))
+        .filter(|(_, c)| vpngate::is_tcp(c))
         .collect();
     candidates.sort_by(|a, b| {
         b.0.is_official()
@@ -92,8 +92,8 @@ fn run() -> Result<(), String> {
             } else {
                 "자원봉사자 운영"
             },
-            cfg.remote_ip,
-            cfg.port
+            vpngate::remote_ip(cfg),
+            cfg.remotes[0].port
         );
         let t0 = Instant::now();
         let mut log = |m: String| println!("    {:>6} ms  {m}", t0.elapsed().as_millis());

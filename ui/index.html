@@ -109,6 +109,24 @@
     border: 2px solid #b9b5b2; background: #fff;
   }
   .tile[aria-checked="true"] .radio::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--dot); }
+  /* 타일 3개일 때는 조금 촘촘하게 */
+  .tiles.three { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tiles.three .tile { gap: 8px; padding: 0 10px; font-size: 15.5px; white-space: nowrap; }
+  .tiles.three .radio { width: 20px; height: 20px; }
+  .tiles.three .tile[aria-checked="true"] .radio::after { width: 10px; height: 10px; }
+  .vpn-file { margin-top: 12px; }
+  .vpn-file[hidden] { display: none; }
+
+  /* 입력칸 (VPN 계정) */
+  .field {
+    display: block; width: 100%; height: 50px; padding: 0 16px; border: 0; outline: none;
+    border-radius: 0 14px 0 0; background: var(--tile);
+    font: 800 16px "NanumSquareRound", "Malgun Gothic", sans-serif; color: var(--text);
+  }
+  .field::placeholder { color: #aaa4a0; }
+  .field:focus { box-shadow: inset 0 0 0 2px var(--head-b, #ff9a3c); }
+  .field + .field { margin-top: 10px; }
+  .modal-note { margin: 0 0 12px; font-size: 14px; font-weight: 700; color: var(--text-sub); text-align: center; }
 
   /* 패널 안의 항목 */
   .item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; }
@@ -242,9 +260,14 @@
   <section class="panel">
     <div class="panel-head"><svg class="star-l" viewBox="0 0 24 24"><path fill="currentColor" d="M12 0c1 7 5 11 12 12-7 1-11 5-12 12-1-7-5-11-12-12C7 11 11 7 12 0z"/></svg><span>일본 연결</span><svg class="star-r" viewBox="0 0 32 32"><path fill="#ffb92e" d="M13 2c.8 6.2 3.8 9.2 10 10-6.2.8-9.2 3.8-10 10-.8-6.2-3.8-9.2-10-10 6.2-.8 9.2-3.8 10-10z"/><path fill="#ffffff" opacity=".9" d="M25 18c.4 3.2 1.8 4.6 5 5-3.2.4-4.6 1.8-5 5-.4-3.2-1.8-4.6-5-5 3.2-.4 4.6-1.8 5-5z"/></svg></div>
     <div class="panel-body">
-      <div class="tiles" id="mode" role="radiogroup" aria-label="일본 연결">
+      <div class="tiles three" id="mode" role="radiogroup" aria-label="일본 연결">
         <button class="tile" role="radio" aria-checked="false" data-mode="vpngate"><span class="radio"></span>VPN Gate</button>
-        <button class="tile" role="radio" aria-checked="false" data-mode="direct"><span class="radio"></span>내 VPN</button>
+        <button class="tile" role="radio" aria-checked="false" data-mode="file"><span class="radio"></span>VPN 파일</button>
+        <button class="tile" role="radio" aria-checked="false" data-mode="direct"><span class="radio"></span>일반 연결</button>
+      </div>
+      <div class="item vpn-file" id="vpnRow" hidden>
+        <div class="item-main"><div class="item-title">VPN 파일</div><div class="item-sub path" id="vpnName">-</div></div>
+        <div class="item-actions"><button class="pill" id="vpnAuth" hidden>계정</button><button class="pill" id="vpnPick">파일 선택</button></div>
       </div>
     </div>
   </section>
@@ -340,15 +363,16 @@
     if (shown) $('bar').style.width = pct + '%';
   }
 
+  let vpnReady = true;
   function updateStart() {
     const b = $('start');
     $('startIcon').innerHTML = busy ? '<span class="spinner"></span>' : ICON.play;
     $('startLabel').textContent = busy ? '실행 중' : '게임 시작';
-    b.disabled = busy || !gameFound;
+    b.disabled = busy || !gameFound || !vpnReady;
   }
   function setBusy(b) {
     busy = b;
-    for (const id of ['folder', 'accountBtn', 'auto', 'closeAfter']) $(id).disabled = b;
+    for (const id of ['folder', 'accountBtn', 'auto', 'closeAfter', 'vpnPick', 'vpnAuth']) $(id).disabled = b;
     $('mode').querySelectorAll('button').forEach((x) => (x.disabled = b));
     if (!b) setMeter(null);
     updateStart();
@@ -366,9 +390,63 @@
     $('mode').querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x.dataset.mode === s.mode)));
     $('auto').setAttribute('aria-checked', String(s.auto_start));
     $('closeAfter').setAttribute('aria-checked', String(s.close_after_launch));
+    vpnState = s;
+    const fileMode = s.mode === 'file';
+    $('vpnRow').hidden = !fileMode;
+    $('vpnName').textContent = s.vpn_file || '선택 안 됨';
+    $('vpnName').title = s.vpn_file || '';
+    $('vpnAuth').hidden = !s.vpn_needs_auth;
+    vpnReady = !fileMode || !!s.vpn_file;
     gameFound = s.game_found;
     updateStart();
     if (!gameFound && !busy) setStatus('게임 폴더를 선택하세요', true);
+    else if (!vpnReady && !busy) setStatus('VPN 파일을 선택하세요', true);
+    else if ($('status').textContent === 'VPN 파일을 선택하세요') setStatus('');
+  }
+  let vpnState = {};
+
+  // VPN 아이디·비밀번호 입력 (파일이 요구할 때만). 값은 런처가 암호화해 저장
+  async function askVpnAuth() {
+    const body = document.createElement('div');
+    const note = document.createElement('p');
+    note.className = 'modal-note';
+    note.textContent = vpnState.vpn_file || '';
+    const user = document.createElement('input');
+    user.className = 'field';
+    user.placeholder = '아이디';
+    user.autocomplete = 'off';
+    user.spellcheck = false;
+    const pass = document.createElement('input');
+    pass.className = 'field';
+    pass.type = 'password';
+    pass.placeholder = '비밀번호';
+    pass.autocomplete = 'off';
+    body.append(note, user, pass);
+    for (const el of [user, pass]) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') $('modalButtons').lastChild.click();
+      });
+    }
+    const shown = openModal({
+      title: 'VPN 계정',
+      body,
+      buttons: [
+        { label: '취소', kind: 'secondary', icon: 'cross', value: false },
+        { label: '결정', kind: 'primary', icon: 'check', value: true },
+      ],
+    });
+    setTimeout(() => user.focus(), 50);
+    if (!(await shown)) return false;
+    try {
+      render(await invoke('set_vpn_auth', { username: user.value, password: pass.value }));
+      setStatus('VPN 계정을 저장했습니다');
+      return true;
+    } catch (e) {
+      setStatus(String(e), true);
+      return false;
+    } finally {
+      pass.value = '';
+    }
   }
   async function refresh() {
     try { render(await invoke('get_status')); } catch (e) { setStatus(String(e), true); }
@@ -423,7 +501,23 @@
     }
   }
 
-  $('start').onclick = () => run('start_game');
+  $('start').onclick = async () => {
+    if (vpnState.mode === 'file' && vpnState.vpn_needs_auth && !vpnState.vpn_has_auth) {
+      if (!(await askVpnAuth())) return;
+    }
+    run('start_game');
+  };
+  $('vpnPick').onclick = async () => {
+    try {
+      const s = await invoke('pick_vpn_file');
+      render(s);
+      if (s.vpn_file && vpnReady && gameFound) setStatus('');
+      if (s.vpn_needs_auth && !s.vpn_has_auth) await askVpnAuth();
+    } catch (e) {
+      setStatus(String(e), true);
+    }
+  };
+  $('vpnAuth').onclick = () => askVpnAuth();
   $('accountBtn').onclick = async () => {
     if (!loggedIn) return run('login');
     const ok = await openModal({

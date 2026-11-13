@@ -144,7 +144,13 @@ fn get_status(state: tauri::State<'_, AppState>) -> Status {
 
 #[tauri::command]
 fn set_mode(state: tauri::State<'_, AppState>, mode: String) -> Result<Status, String> {
-    if mode != launcher::MODE_VPNGATE && mode != launcher::MODE_DIRECT {
+    if ![
+        launcher::MODE_VPNGATE,
+        launcher::MODE_DIRECT,
+        launcher::MODE_FILE,
+    ]
+    .contains(&mode.as_str())
+    {
         return Err("알 수 없는 연결 방식입니다".into());
     }
     let mut s = state.store.settings();
@@ -212,6 +218,44 @@ async fn pick_game_folder(app: AppHandle, window: tauri::Window) -> Result<Statu
         s.installed_version = None; // 새 폴더는 버전을 모르므로 다음 실행 때 파일 전체 검사
         state.store.save_settings(&s)?;
     }
+    Ok(state.store.status())
+}
+
+/// VPN 설정 파일(.ovpn / WireGuard .conf) 선택
+#[tauri::command]
+async fn pick_vpn_file(app: AppHandle, window: tauri::Window) -> Result<Status, String> {
+    let dialog_app = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .set_title("VPN 설정 파일 선택")
+            .add_filter("VPN 설정 파일", &["ovpn", "conf"])
+            .set_parent(&window)
+            .blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let state = app.state::<AppState>();
+    let Some(picked) = picked else {
+        return Ok(state.store.status());
+    };
+    let path: PathBuf = picked.into_path().map_err(|e| e.to_string())?;
+    state.store.import_vpn_file(&path)?;
+    Ok(state.store.status())
+}
+
+/// VPN 아이디·비밀번호 저장 (사용자가 화면에 직접 입력한 값, DPAPI 로 암호화)
+#[tauri::command]
+fn set_vpn_auth(
+    state: tauri::State<'_, AppState>,
+    username: String,
+    password: String,
+) -> Result<Status, String> {
+    if username.trim().is_empty() || password.is_empty() {
+        return Err("아이디와 비밀번호를 모두 입력하세요".into());
+    }
+    state.store.save_vpn_auth(username.trim(), &password)?;
     Ok(state.store.status())
 }
 
@@ -324,6 +368,8 @@ fn main() {
             set_close_after_launch,
             take_auto_start,
             pick_game_folder,
+            pick_vpn_file,
+            set_vpn_auth,
             start_game,
             login,
             logout,
