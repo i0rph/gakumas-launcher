@@ -1,7 +1,7 @@
 //! UI 없이 런처 핵심 흐름을 시험하는 개발용 프로그램
 //!
 //! 사용법: launcher_cli --data-dir <폴더> [--import-ps-token <dmm_login.dat>] [--mode vpngate|direct|file]
-//!                     [--vpn-file <.ovpn/.conf>] [--vpn-auth-file <아이디·비밀번호 두 줄>] [--launch]
+//!                     [--vpn-file <.ovpn/.conf>] [--vpn-auth-file <아이디·비밀번호 두 줄>] [--status-only] [--launch]
 //! --launch 가 없으면 게임을 실행하지 않고 업데이트도 목록만 확인합니다. 로그인이 필요하면 실패로 끝납니다.
 
 use std::path::PathBuf;
@@ -16,6 +16,7 @@ fn main() {
     let mut launch = false;
     let mut vpn_file: Option<PathBuf> = None;
     let mut vpn_auth: Option<PathBuf> = None;
+    let mut status_only = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -25,6 +26,7 @@ fn main() {
             "--launch" => launch = true,
             "--vpn-file" => vpn_file = args.next().map(PathBuf::from),
             "--vpn-auth-file" => vpn_auth = args.next().map(PathBuf::from),
+            "--status-only" => status_only = true,
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(2);
@@ -61,6 +63,9 @@ fn main() {
         store.save_settings(&s).expect("save settings");
     }
     println!("상태: {:?}", store.status());
+    if status_only {
+        return;
+    }
     let t0 = Instant::now();
     let progress = |m: &str, p: Option<f32>| match p {
         Some(p) => println!("{:>6} ms  [{p:5.1}%] {m}", t0.elapsed().as_millis()),
