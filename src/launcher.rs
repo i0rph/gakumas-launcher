@@ -174,6 +174,15 @@ impl Store {
         fs::write(self.file("login.dat"), blob).map_err(|e| format!("로그인 토큰 저장 실패: {e}"))
     }
 
+    /// 저장된 토큰이 아직 `token` 일 때만 삭제 (그사이 새로 로그인했으면 그대로 둠)
+    pub fn clear_token_if(&self, token: &str) -> Result<(), String> {
+        if self.token().as_deref() == Some(token) {
+            self.clear_token()
+        } else {
+            Ok(())
+        }
+    }
+
     /// 저장된 로그인 토큰 삭제. 백신 검사 등으로 잠깐 잠겨 있을 수 있어 몇 번 다시 시도
     pub fn clear_token(&self) -> Result<(), String> {
         let path = self.file("login.dat");
@@ -449,6 +458,39 @@ pub fn login(store: &Store, get_code: CodeFn, progress: ProgressFn) -> Result<St
     Ok(token)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenCheck {
+    Valid,
+    Expired,
+    /// 연결 실패 등으로 확인하지 못함
+    Unknown,
+}
+
+/// 토큰이 아직 유효한지 DMM 에 확인. DMM 은 지역보다 인증을 먼저 보므로 VPN 없이 일반 회선으로 됨
+/// (만료·무효: 203 / 유효: 100, 일본 밖이면 지역 차단 801·803)
+pub fn check_token(token: &str) -> TokenCheck {
+    match direct_post("/v5/userinfo", &json!({}), Some(token)) {
+        Ok(r) => match r["result_code"].as_i64() {
+            Some(203) => TokenCheck::Expired,
+            Some(100 | 801 | 803) => TokenCheck::Valid,
+            _ => TokenCheck::Unknown,
+        },
+        Err(_) => TokenCheck::Unknown,
+    }
+}
+
+/// 저장된 토큰을 검사해 만료됐으면 지움. 확인하지 못하면 그대로 둠
+pub fn verify_saved_token(store: &Store) -> Result<TokenCheck, String> {
+    let Some(token) = store.token() else {
+        return Ok(TokenCheck::Expired);
+    };
+    let c = check_token(&token);
+    if c == TokenCheck::Expired {
+        store.clear_token_if(&token)?;
+    }
+    Ok(c)
+}
+
 // ---------------------------------------------------------------------------
 // 실행
 // ---------------------------------------------------------------------------
@@ -483,8 +525,15 @@ pub fn start_game(
     }
     let game_type = settings.game_type.clone().unwrap_or_else(|| "GCL".into());
 
+    // 저장된 토큰이 유효하면 그대로 쓰고, 만료됐으면 VPN 을 열기 전에 다시 로그인
+    progress("로그인 확인 중", None);
     let mut token = match store.token() {
-        Some(t) => t,
+        Some(t) if check_token(&t) != TokenCheck::Expired => t,
+        Some(t) => {
+            progress("로그인이 만료되어 다시 로그인합니다", None);
+            store.clear_token_if(&t)?;
+            login(store, get_code, progress)?
+        }
         None => login(store, get_code, progress)?,
     };
 

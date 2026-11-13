@@ -254,6 +254,22 @@ fn logout(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Status, S
     Ok(state.store.status())
 }
 
+/// 저장된 로그인이 아직 유효한지 확인하고 상태를 돌려줌 (만료됐으면 로그아웃 상태로)
+#[tauri::command]
+async fn verify_login(app: AppHandle) -> Result<Status, String> {
+    if *app.state::<AppState>().busy.lock().unwrap() {
+        return Ok(app.state::<AppState>().store.status());
+    }
+    let worker = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = worker.state::<AppState>();
+        launcher::verify_saved_token(&state.store)?;
+        Ok(state.store.status())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// 진행 중 닫기 확인 후 종료
 #[tauri::command]
 fn force_close(app: AppHandle, state: tauri::State<'_, AppState>) {
@@ -311,6 +327,7 @@ fn main() {
             start_game,
             login,
             logout,
+            verify_login,
             force_close
         ])
         .run(tauri::generate_context!())

@@ -497,7 +497,10 @@
   (async () => {
     updateStart();
     await refresh();
-    if (gameFound && (await invoke('take_auto_start'))) run('start_game');
+    if (gameFound && (await invoke('take_auto_start'))) return run('start_game'); // 게임 시작에서 로그인도 확인
+    if (loggedIn) {
+      try { const s = await invoke('verify_login'); if (!busy) render(s); } catch {}
+    }
   })();
 </script>
 </body>
