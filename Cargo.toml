@@ -1,0 +1,57 @@
+[package]
+name = "gakumas-launcher"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "DMM Gakumas launcher with a built-in user-space VPN (VPN Gate) for the region check"
+
+[[bin]]
+name = "GakumasLauncher"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# UI (WebView2). The login window is an in-app WebView2 window, not an external browser.
+tauri = { version = "2", features = [] }
+# Windows' own folder picker for the game folder.
+tauri-plugin-dialog = "2"
+# Same versions Tauri/wry use; only for switching on WebView2's own password save in the login window.
+webview2-com = "0.39"
+windows-core = "0.62"
+# TLS: OpenVPN control channel and HTTPS to DMM. ring backend builds with MSVC alone (no NASM/CMake).
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pemfile = "2"
+webpki-roots = "0.26"
+# User-space TCP/IP stack: no virtual network adapter, no route changes.
+smoltcp = { version = "=0.11.0", default-features = false, features = ["std", "medium-ip", "proto-ipv4", "socket-tcp"] }
+# OpenVPN data channel (AES-128-CBC + HMAC-SHA1) and key derivation (TLS 1.0 PRF).
+aes = "0.8"
+cbc = { version = "0.1", features = ["std", "block-padding"] }
+hmac = "0.12"
+sha1 = "0.10"
+md-5 = "0.10"
+getrandom = "0.2"
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Plain HTTPS (login API, file list, game file downloads) over the normal connection.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

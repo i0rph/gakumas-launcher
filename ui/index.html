@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>학원 아이돌마스터</title>
+<style>
+  /* 글꼴: 나눔스퀘어 라운드 (NAVER, SIL OFL 1.1 - fonts/FONT-LICENSE.txt) */
+  @font-face { font-family: "NanumSquareRound"; src: url("fonts/NanumSquareRoundR.woff2") format("woff2"); font-weight: 400; }
+  @font-face { font-family: "NanumSquareRound"; src: url("fonts/NanumSquareRoundB.woff2") format("woff2"); font-weight: 700; }
+  @font-face { font-family: "NanumSquareRound"; src: url("fonts/NanumSquareRoundEB.woff2") format("woff2"); font-weight: 800; }
+
+  :root {
+    color-scheme: light;
+    --page: #f5f5f4;
+    --text: #4f4b4b;
+    --text-sub: #9a9696;
+    --line: #e6e4e2;
+    --tile: #f5f4f1;
+    --tile-on: #fff0c7;
+    --dot: #ff7b00;
+    --red: #ff4b4b;
+    --head-a: #ff9416;
+    --head-b: #ffb630;
+    --head-c: #ffc552;
+    --cta-a: #ff653c;
+    --cta-b: #ff9b2c;
+    --cta-c: #ffad2a;
+    --chip: rgba(78, 66, 66, 0.62);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow-y: auto; color: var(--text); user-select: none; cursor: default;
+    font-family: "NanumSquareRound", "Malgun Gothic", sans-serif; font-weight: 700;
+    background-color: var(--page);
+    /* 연한 원·마름모 무늬 */
+    background-image:
+      radial-gradient(circle at 18% 22%, #efeeec 0 92px, transparent 93px),
+      radial-gradient(circle at 92% 58%, #efeeec 0 120px, transparent 121px),
+      radial-gradient(circle at 10% 92%, #f0efed 0 70px, transparent 71px),
+      linear-gradient(45deg, transparent 46%, #f0efed 46% 54%, transparent 54%);
+    background-size: 100% 100%, 100% 100%, 100% 100%, 220px 220px;
+    background-attachment: fixed;
+  }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 999px; background: #cfcac6 padding-box; }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-button { display: none; height: 0; }
+  svg { display: block; }
+
+  /* ---------- 창 버튼 (머리 줄 오른쪽, 흰 원형) ---------- */
+  .win-buttons { display: flex; gap: 10px; flex: none; }
+  .win-buttons button {
+    display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 0; border-radius: 50%; cursor: pointer;
+    background: linear-gradient(#ffffff, #f4f3f1); color: #6b6565;
+    box-shadow: 0 2px 6px rgba(70, 50, 40, 0.16); transition: color 0.15s;
+  }
+  .win-buttons svg { width: 14px; height: 14px; }
+  .win-buttons button:hover { color: #4f4b4b; }
+  .win-buttons .close:hover { color: var(--red); }
+  .win-buttons button:active { transform: translateY(1px); box-shadow: 0 1px 3px rgba(70, 50, 40, 0.16); }
+
+  main { padding: 16px 0 140px; }
+
+  /* ---------- 머리 줄: 제목 알약 + 창 버튼 (빈 곳을 잡고 창을 끔) ---------- */
+  .header { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 24px 20px 0; }
+  .title-pill {
+    display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 32px 0 20px;
+    border-radius: 0 999px 999px 0; background: rgba(255, 255, 255, 0.9);
+    border: 2px solid #e7e4e1; border-left: 0; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.05);
+    font-size: 21px; font-weight: 800; color: #555050;
+  }
+  .title-pill svg { width: 26px; height: 26px; color: #ff9a16; pointer-events: none; }
+
+  /* ---------- 주황 머리띠 패널 ---------- */
+  .panel { position: relative; margin: 0 18px 22px; }
+  .panel-head {
+    position: relative; display: flex; align-items: center; gap: 8px; height: 46px; padding-left: 14px;
+    border-radius: 0 24px 0 0; overflow: hidden; color: #fff; font-size: 21px; font-weight: 800; letter-spacing: 0.02em;
+    background: linear-gradient(90deg, var(--head-a), var(--head-b) 62%, var(--head-c));
+    text-shadow: 0 1px 1px rgba(196, 92, 0, 0.3);
+  }
+  .panel-head::after {
+    content: ""; position: absolute; top: 0; right: 0; bottom: 0; width: 36%;
+    background: linear-gradient(90deg, rgba(255, 233, 186, 0.55), rgba(255, 240, 205, 0.9));
+    clip-path: polygon(34% 0, 100% 0, 100% 100%, 0 100%);
+  }
+  .panel-head .star-l { width: 15px; height: 15px; color: #fff; flex: none; }
+  .panel-head .star-r { position: absolute; right: 14px; top: 8px; width: 30px; height: 30px; z-index: 1; }
+  .panel-head span { position: relative; z-index: 1; }
+  .panel-body {
+    background: #fff; border-radius: 0 0 0 28px; padding: 18px 18px 20px;
+    box-shadow: 0 4px 14px rgba(70, 40, 20, 0.05);
+  }
+
+  /* 선택 타일 (라디오) */
+  .tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .tile {
+    display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; border: 0;
+    border-radius: 0 16px 0 0; background: var(--tile); cursor: pointer;
+    font: 800 17px "NanumSquareRound", "Malgun Gothic", sans-serif; color: var(--text);
+    transition: background-color 0.15s;
+  }
+  .tile[aria-checked="true"] { background: var(--tile-on); }
+  .tile:disabled { cursor: default; }
+  .radio {
+    flex: none; display: grid; place-items: center; width: 23px; height: 23px; border-radius: 50%;
+    border: 2px solid #b9b5b2; background: #fff;
+  }
+  .tile[aria-checked="true"] .radio::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--dot); }
+
+  /* 패널 안의 항목 */
+  .item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; }
+  .item:first-child { padding-top: 2px; }
+  .item:last-child { padding-bottom: 0; }
+  .item + .item { border-top: 2px solid var(--line); }
+  .item-main { min-width: 0; }
+  .item-title { font-size: 18px; font-weight: 800; color: #555050; }
+  .item-sub { margin-top: 6px; font-size: 14px; font-weight: 700; color: var(--text-sub); word-break: break-all; }
+  /* 한글 글꼴은 \ 를 ₩ 로 그리므로 경로는 영문 글꼴 먼저 */
+  .item-sub.path {
+    font-family: "Segoe UI", "NanumSquareRound", "Malgun Gothic", sans-serif; font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: normal;
+  }
+  .item-main { flex: 1; }
+  .item-actions { display: flex; gap: 8px; flex: none; }
+  .item-sub.account { display: flex; align-items: center; gap: 7px; }
+  .item-sub.account .dot { width: 9px; height: 9px; border-radius: 50%; background: #ff6b6b; }
+  .item-sub.account .dot.on { background: #4cd27e; }
+
+  /* ON/OFF 스위치 */
+  .toggle {
+    position: relative; flex: none; width: 88px; height: 38px; padding: 0; border: 0; border-radius: 999px; cursor: pointer;
+    background: #cdc9c6; box-shadow: inset 0 2px 3px rgba(0, 0, 0, 0.08); transition: background 0.2s;
+  }
+  .toggle[aria-checked="true"] { background: linear-gradient(90deg, #ff8436, #ffa23e); }
+  .toggle .word {
+    position: absolute; top: 0; bottom: 0; display: flex; align-items: center;
+    font: 800 15px "NanumSquareRound", sans-serif; color: #fff; letter-spacing: 0.04em;
+  }
+  .toggle .word.on { left: 18px; opacity: 0; }
+  .toggle .word.off { right: 16px; }
+  .toggle[aria-checked="true"] .word.on { opacity: 1; }
+  .toggle[aria-checked="true"] .word.off { opacity: 0; }
+  .toggle .knob {
+    position: absolute; top: 4px; left: 4px; width: 30px; height: 30px; border-radius: 50%; background: #fff;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.22); transition: transform 0.28s cubic-bezier(0.3, 1.4, 0.6, 1);
+  }
+  .toggle[aria-checked="true"] .knob { transform: translateX(50px); }
+  .toggle:disabled { cursor: default; opacity: 0.6; }
+
+  /* 작은 흰 알약 버튼 */
+  .pill {
+    height: 36px; padding: 0 16px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    border: 0; background: linear-gradient(#ffffff, #f4f3f1);
+    box-shadow: 0 2px 6px rgba(70, 50, 40, 0.16);
+    font: 800 14px "NanumSquareRound", "Malgun Gothic", sans-serif; color: #555050;
+  }
+  .pill:active { transform: translateY(1px); box-shadow: 0 1px 3px rgba(70, 50, 40, 0.16); }
+  .pill.danger { color: var(--red); }
+  .pill:disabled { cursor: default; opacity: 0.5; transform: none; }
+
+  /* 큰 버튼 (결정 / 취소) */
+  .btn {
+    position: relative; display: flex; align-items: center; justify-content: center; height: 62px; padding: 0 30px 0 52px;
+    border: 0; border-radius: 999px; cursor: pointer; white-space: nowrap;
+    font: 800 20px "NanumSquareRound", "Malgun Gothic", sans-serif; letter-spacing: 0.06em;
+    transition: transform 0.12s, filter 0.2s;
+  }
+  .btn .icon { position: absolute; left: 24px; top: 50%; width: 26px; height: 26px; transform: translateY(-50%); }
+  .btn.primary {
+    color: #fff; text-shadow: 0 1px 1px rgba(180, 60, 0, 0.3);
+    background: linear-gradient(90deg, var(--cta-a), var(--cta-b) 62%, var(--cta-c));
+    box-shadow: 0 6px 14px rgba(255, 104, 40, 0.3);
+  }
+  .btn.secondary {
+    color: #555050; background: linear-gradient(#ffffff, #f2f1ef);
+    box-shadow: 0 6px 14px rgba(70, 50, 40, 0.16);
+  }
+  .btn .icon { color: inherit; }
+  .btn.secondary .icon { color: #6b6565; }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { cursor: default; transform: none; filter: saturate(0.35) brightness(1.06); }
+
+  /* ---------- 하단: 상태 + 기록 버튼 + 게임 시작 ---------- */
+  .bottom {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; padding: 34px 24px 22px;
+    background: linear-gradient(to bottom, rgba(245, 245, 244, 0), var(--page) 38%);
+  }
+  .meter { display: none; height: 8px; margin: 0 4px 10px; border-radius: 999px; background: #e7e3e0; overflow: hidden; }
+  .meter.shown { display: block; }
+  .meter > div { height: 100%; width: 0; border-radius: 999px; background: linear-gradient(90deg, var(--head-a), var(--head-c)); transition: width 0.3s; }
+  .status { min-height: 18px; margin: 0 6px 14px; text-align: center; font-size: 14px; font-weight: 700; color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status.error { color: var(--red); }
+  .bottom-row { display: flex; align-items: center; gap: 16px; }
+  .round {
+    flex: none; display: grid; place-items: center; width: 58px; height: 58px; border-radius: 50%; cursor: pointer;
+    border: 2px solid rgba(255, 255, 255, 0.75); background: var(--chip); color: #fff;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+  }
+  .round svg { width: 26px; height: 26px; }
+  .round:active { transform: scale(0.95); }
+  #start { flex: 1; }
+  .btn .icon svg { width: 100%; height: 100%; }
+  .spinner { display: block; width: 22px; height: 22px; margin: 2px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.4); border-top-color: #fff; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---------- 팝업 ---------- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 40; display: flex; align-items: center; justify-content: center; padding: 30px 0 40px;
+    background: rgba(50, 38, 34, 0.38); backdrop-filter: blur(5px);
+    opacity: 0; pointer-events: none; transition: opacity 0.18s;
+  }
+  .overlay.shown { opacity: 1; pointer-events: auto; }
+  .modal { width: calc(100% - 36px); margin: 0; transform: scale(0.96); transition: transform 0.22s cubic-bezier(0.3, 1.4, 0.6, 1); }
+  .overlay.shown .modal { transform: none; }
+  .modal .panel-body { padding-bottom: 50px; }
+  .modal-text { font-size: 17px; line-height: 1.6; color: #555050; white-space: pre-line; text-align: center; padding: 6px 0 4px; }
+  .modal-log {
+    margin: 0; height: 300px; overflow-y: auto; padding: 12px 14px; border-radius: 0 14px 0 0; background: var(--tile);
+    font: 700 12.5px/1.6 "NanumSquareRound", "Malgun Gothic", sans-serif; color: #6c6666; white-space: pre-wrap; user-select: text;
+  }
+  .modal-buttons { position: relative; display: flex; gap: 16px; margin-top: -31px; padding: 0 12px; }
+  .modal-buttons .btn { flex: 1 1 0; min-width: 0; padding: 0 20px 0 48px; }
+  .modal-buttons .btn:only-child { flex: 0 1 62%; margin: 0 auto; }
+</style>
+</head>
+<body>
+<main>
+  <div class="header" data-tauri-drag-region>
+    <div class="title-pill" data-tauri-drag-region>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><circle cx="12" cy="12" r="9.5"/><path d="M10 8.2v7.6l6-3.8z" fill="currentColor"/></svg>
+      런처
+    </div>
+    <div class="win-buttons">
+      <button class="minimize" id="winMin" aria-label="최소화"><svg viewBox="0 0 14 14"><path d="M2.5 7h9" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+      <button class="close" id="winClose" aria-label="닫기"><svg viewBox="0 0 14 14"><path d="M3 3l8 8M11 3l-8 8" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+    </div>
+  </div>
+
+  <section class="panel">
+    <div class="panel-head"><svg class="star-l" viewBox="0 0 24 24"><path fill="currentColor" d="M12 0c1 7 5 11 12 12-7 1-11 5-12 12-1-7-5-11-12-12C7 11 11 7 12 0z"/></svg><span>일본 연결</span><svg class="star-r" viewBox="0 0 32 32"><path fill="#ffb92e" d="M13 2c.8 6.2 3.8 9.2 10 10-6.2.8-9.2 3.8-10 10-.8-6.2-3.8-9.2-10-10 6.2-.8 9.2-3.8 10-10z"/><path fill="#ffffff" opacity=".9" d="M25 18c.4 3.2 1.8 4.6 5 5-3.2.4-4.6 1.8-5 5-.4-3.2-1.8-4.6-5-5 3.2-.4 4.6-1.8 5-5z"/></svg></div>
+    <div class="panel-body">
+      <div class="tiles" id="mode" role="radiogroup" aria-label="일본 연결">
+        <button class="tile" role="radio" aria-checked="false" data-mode="vpngate"><span class="radio"></span>VPN Gate</button>
+        <button class="tile" role="radio" aria-checked="false" data-mode="direct"><span class="radio"></span>내 VPN</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><svg class="star-l" viewBox="0 0 24 24"><path fill="currentColor" d="M12 0c1 7 5 11 12 12-7 1-11 5-12 12-1-7-5-11-12-12C7 11 11 7 12 0z"/></svg><span>설정</span><svg class="star-r" viewBox="0 0 32 32"><path fill="#ffb92e" d="M13 2c.8 6.2 3.8 9.2 10 10-6.2.8-9.2 3.8-10 10-.8-6.2-3.8-9.2-10-10 6.2-.8 9.2-3.8 10-10z"/><path fill="#ffffff" opacity=".9" d="M25 18c.4 3.2 1.8 4.6 5 5-3.2.4-4.6 1.8-5 5-.4-3.2-1.8-4.6-5-5 3.2-.4 4.6-1.8 5-5z"/></svg></div>
+    <div class="panel-body">
+      <div class="item">
+        <div class="item-main"><div class="item-title" id="autoLabel">실행 시 자동 시작</div></div>
+        <button class="toggle" id="auto" role="switch" aria-checked="false" aria-labelledby="autoLabel"><span class="word on">ON</span><span class="word off">OFF</span><span class="knob"></span></button>
+      </div>
+      <div class="item">
+        <div class="item-main"><div class="item-title" id="closeLabel">게임 실행 후 런처 종료</div></div>
+        <button class="toggle" id="closeAfter" role="switch" aria-checked="false" aria-labelledby="closeLabel"><span class="word on">ON</span><span class="word off">OFF</span><span class="knob"></span></button>
+      </div>
+      <div class="item">
+        <div class="item-main"><div class="item-title">게임 폴더</div><div class="item-sub path" id="path">-</div></div>
+        <div class="item-actions"><button class="pill" id="folder">변경</button></div>
+      </div>
+      <div class="item">
+        <div class="item-main"><div class="item-title">DMM 계정</div><div class="item-sub account"><span class="dot" id="accountDot"></span><span id="accountText">-</span></div></div>
+        <div class="item-actions"><button class="pill" id="accountBtn">로그인</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="bottom">
+  <div class="meter" id="meter"><div id="bar"></div></div>
+  <div class="status" id="status"></div>
+  <div class="bottom-row">
+    <button class="round" id="logBtn" aria-label="기록"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 7h11M8 12h11M8 17h11"/><circle cx="4.2" cy="7" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.2" cy="12" r="1.1" fill="currentColor" stroke="none"/><circle cx="4.2" cy="17" r="1.1" fill="currentColor" stroke="none"/></svg></button>
+    <button class="btn primary" id="start"><span class="icon" id="startIcon"></span><span id="startLabel">게임 시작</span></button>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="panel modal">
+    <div class="panel-head"><svg class="star-l" viewBox="0 0 24 24"><path fill="currentColor" d="M12 0c1 7 5 11 12 12-7 1-11 5-12 12-1-7-5-11-12-12C7 11 11 7 12 0z"/></svg><span id="modalTitle"></span><svg class="star-r" viewBox="0 0 32 32"><path fill="#ffb92e" d="M13 2c.8 6.2 3.8 9.2 10 10-6.2.8-9.2 3.8-10 10-.8-6.2-3.8-9.2-10-10 6.2-.8 9.2-3.8 10-10z"/><path fill="#ffffff" opacity=".9" d="M25 18c.4 3.2 1.8 4.6 5 5-3.2.4-4.6 1.8-5 5-.4-3.2-1.8-4.6-5-5 3.2-.4 4.6-1.8 5-5z"/></svg></div>
+    <div class="panel-body" id="modalBody"></div>
+    <div class="modal-buttons" id="modalButtons"></div>
+  </div>
+</div>
+
+<script>
+  const { invoke } = window.__TAURI__.core;
+  const { listen } = window.__TAURI__.event;
+  const appWindow = window.__TAURI__.window.getCurrentWindow();
+  const $ = (id) => document.getElementById(id);
+
+  const ICON = {
+    play: '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M7 4.5v15a1 1 0 0 0 1.5.86l12.4-7.5a1 1 0 0 0 0-1.72L8.5 3.64A1 1 0 0 0 7 4.5z"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.2 5.2L20 6.8"/></svg>',
+    cross: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 5l14 14M19 5L5 19"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"><rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3" stroke-linecap="round"/></svg>',
+  };
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      const t = document.createElement('textarea');
+      t.value = text;
+      t.style.position = 'fixed';
+      t.style.opacity = '0';
+      document.body.appendChild(t);
+      t.select();
+      const ok = document.execCommand('copy');
+      t.remove();
+      return ok;
+    }
+  }
+
+  let busy = false;
+  let gameFound = false;
+  const logLines = [];
+
+  function log(msg) {
+    const t = new Date().toLocaleTimeString('ko-KR', { hour12: false });
+    logLines.push(`${t}  ${msg}`);
+    const pre = document.querySelector('.modal-log');
+    if (pre) { pre.textContent = logLines.join('\n'); pre.scrollTop = pre.scrollHeight; }
+  }
+  function setStatus(text, error = false) {
+    $('status').textContent = text || '';
+    $('status').title = text || '';
+    $('status').classList.toggle('error', error);
+  }
+  function setMeter(pct) {
+    const shown = pct != null && pct > 0 && pct < 100;
+    $('meter').classList.toggle('shown', shown);
+    if (shown) $('bar').style.width = pct + '%';
+  }
+
+  function updateStart() {
+    const b = $('start');
+    $('startIcon').innerHTML = busy ? '<span class="spinner"></span>' : ICON.play;
+    $('startLabel').textContent = busy ? '실행 중' : '게임 시작';
+    b.disabled = busy || !gameFound;
+  }
+  function setBusy(b) {
+    busy = b;
+    for (const id of ['folder', 'accountBtn', 'auto', 'closeAfter']) $(id).disabled = b;
+    $('mode').querySelectorAll('button').forEach((x) => (x.disabled = b));
+    if (!b) setMeter(null);
+    updateStart();
+  }
+
+  let loggedIn = false;
+  function render(s) {
+    loggedIn = s.logged_in;
+    $('accountText').textContent = loggedIn ? '로그인됨' : '로그인 필요';
+    $('accountDot').classList.toggle('on', loggedIn);
+    $('accountBtn').textContent = loggedIn ? '로그아웃' : '로그인';
+    $('accountBtn').classList.toggle('danger', loggedIn);
+    $('path').textContent = s.game_path || '선택 안 됨';
+    $('path').title = s.game_path || '';
+    $('mode').querySelectorAll('button').forEach((x) => x.setAttribute('aria-checked', String(x.dataset.mode === s.mode)));
+    $('auto').setAttribute('aria-checked', String(s.auto_start));
+    $('closeAfter').setAttribute('aria-checked', String(s.close_after_launch));
+    gameFound = s.game_found;
+    updateStart();
+    if (!gameFound && !busy) setStatus('게임 폴더를 선택하세요', true);
+  }
+  async function refresh() {
+    try { render(await invoke('get_status')); } catch (e) { setStatus(String(e), true); }
+  }
+
+  // ---------- 팝업 ----------
+  function openModal({ title, body, buttons }) {
+    return new Promise((resolve) => {
+      $('modalTitle').textContent = title;
+      $('modalBody').replaceChildren(body);
+      const row = $('modalButtons');
+      row.replaceChildren();
+      for (const b of buttons) {
+        const el = document.createElement('button');
+        el.className = 'btn ' + b.kind;
+        el.innerHTML = `<span class="icon">${ICON[b.icon]}</span><span></span>`;
+        el.lastChild.textContent = b.label;
+        el.onclick = () => { $('overlay').classList.remove('shown'); resolve(b.value); };
+        row.appendChild(el);
+      }
+      $('overlay').classList.add('shown');
+    });
+  }
+  function textBody(text) {
+    const d = document.createElement('div');
+    d.className = 'modal-text';
+    d.textContent = text;
+    return d;
+  }
+
+  // ---------- 동작 ----------
+  listen('progress', (e) => {
+    const { message, percent } = e.payload;
+    setStatus(message);
+    setMeter(percent);
+    if (!/^(파일 검사 중|업데이트 중)/.test(message)) log(message);
+  });
+
+  async function run(cmd) {
+    setBusy(true);
+    setStatus('');
+    try {
+      const r = await invoke(cmd);
+      setStatus(r);
+      log(r);
+    } catch (e) {
+      setStatus(String(e), true);
+      log('오류: ' + e);
+    } finally {
+      setBusy(false);
+      refresh();
+    }
+  }
+
+  $('start').onclick = () => run('start_game');
+  $('accountBtn').onclick = async () => {
+    if (!loggedIn) return run('login');
+    const ok = await openModal({
+      title: '로그아웃',
+      body: textBody('로그아웃할까요?\n저장된 로그인 정보가 삭제됩니다.'),
+      buttons: [
+        { label: '취소', kind: 'secondary', icon: 'cross', value: false },
+        { label: '결정', kind: 'primary', icon: 'check', value: true },
+      ],
+    });
+    if (!ok) return;
+    try {
+      render(await invoke('logout'));
+      setStatus('로그아웃했습니다');
+      log('로그아웃했습니다');
+    } catch (e) {
+      setStatus(String(e), true);
+      log('오류: ' + e);
+      refresh();
+    }
+  };
+  $('logBtn').onclick = async () => {
+    const pre = document.createElement('pre');
+    pre.className = 'modal-log';
+    pre.textContent = logLines.length ? logLines.join('\n') : '기록이 없습니다';
+    const shown = openModal({
+      title: '기록',
+      body: pre,
+      buttons: [
+        { label: '닫기', kind: 'secondary', icon: 'cross', value: null },
+        { label: '복사', kind: 'primary', icon: 'copy', value: 'copy' },
+      ],
+    });
+    requestAnimationFrame(() => (pre.scrollTop = pre.scrollHeight));
+    if ((await shown) !== 'copy') return;
+    if (!logLines.length) return setStatus('복사할 기록이 없습니다');
+    setStatus((await copyText(logLines.join('\n'))) ? '기록을 복사했습니다' : '복사하지 못했습니다', false);
+  };
+  $('folder').onclick = async () => {
+    try { render(await invoke('pick_game_folder')); if (gameFound) setStatus(''); } catch (e) { setStatus(String(e), true); }
+  };
+  function bindToggle(id, cmd) {
+    $(id).onclick = async () => {
+      const enabled = $(id).getAttribute('aria-checked') !== 'true';
+      try { render(await invoke(cmd, { enabled })); } catch (e) { setStatus(String(e), true); }
+    };
+  }
+  bindToggle('auto', 'set_auto_start');
+  bindToggle('closeAfter', 'set_close_after_launch');
+  $('mode').querySelectorAll('button').forEach((b) => {
+    b.onclick = async () => {
+      if (b.getAttribute('aria-checked') === 'true') return;
+      try { render(await invoke('set_mode', { mode: b.dataset.mode })); } catch (e) { setStatus(String(e), true); }
+    };
+  });
+
+  $('winClose').onclick = () => appWindow.close();
+  $('winMin').onclick = () => appWindow.minimize();
+
+  (async () => {
+    updateStart();
+    await refresh();
+    if (gameFound && (await invoke('take_auto_start'))) run('start_game');
+  })();
+</script>
+</body>
+</html>
