@@ -52,7 +52,11 @@ pub fn japan_tcp_candidates(body: &str) -> Vec<(Server, OvpnConfig)> {
         .filter_map(|s| parse_config(&s.config_text).ok().map(|c| (s, c)))
         .filter(|(_, c)| c.proto.starts_with("tcp"))
         .collect();
-    v.sort_by(|a, b| b.0.is_official().cmp(&a.0.is_official()).then(b.0.score.cmp(&a.0.score)));
+    v.sort_by(|a, b| {
+        b.0.is_official()
+            .cmp(&a.0.is_official())
+            .then(b.0.score.cmp(&a.0.score))
+    });
     v
 }
 
@@ -63,14 +67,19 @@ pub fn fetch_server_list_raw() -> Result<String, String> {
         .map_err(|e| format!("DNS: {e}"))?
         .find(|a| a.is_ipv4())
         .ok_or("no IPv4 address for www.vpngate.net")?;
-    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(15)).map_err(|e| format!("connect: {e}"))?;
+    let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(15))
+        .map_err(|e| format!("connect: {e}"))?;
     s.set_read_timeout(Some(Duration::from_secs(60))).ok();
     s.write_all(b"GET /api/iphone/ HTTP/1.0\r\nHost: www.vpngate.net\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
         .map_err(|e| format!("send: {e}"))?;
     let mut buf = Vec::new();
-    s.read_to_end(&mut buf).map_err(|e| format!("receive: {e}"))?;
+    s.read_to_end(&mut buf)
+        .map_err(|e| format!("receive: {e}"))?;
     let text = String::from_utf8_lossy(&buf);
-    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).ok_or("malformed HTTP response")?;
+    let body = text
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b)
+        .ok_or("malformed HTTP response")?;
     if !body.contains("*vpn_servers") && !body.contains("#HostName") {
         return Err("unexpected server list response".into());
     }
@@ -88,7 +97,8 @@ pub fn parse_server_list(body: &str) -> Vec<Server> {
         if cols.len() < 15 {
             continue;
         }
-        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(cols[cols.len() - 1].trim()) else {
+        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(cols[cols.len() - 1].trim())
+        else {
             continue;
         };
         out.push(Server {
@@ -108,7 +118,10 @@ pub fn parse_config(text: &str) -> Result<OvpnConfig, String> {
         let open = format!("<{tag}>");
         let close = format!("</{tag}>");
         let start = text.find(&open).ok_or(format!("<{tag}> missing"))? + open.len();
-        let end = text[start..].find(&close).ok_or(format!("</{tag}> missing"))? + start;
+        let end = text[start..]
+            .find(&close)
+            .ok_or(format!("</{tag}> missing"))?
+            + start;
         Ok(text[start..end].trim().to_string())
     };
 

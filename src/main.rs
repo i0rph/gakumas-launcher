@@ -7,7 +7,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
@@ -21,6 +21,8 @@ struct AppState {
     busy: Mutex<bool>,
     /// 이번 실행에서 아직 자동 시작을 하지 않았는지 (프로그램을 켤 때 한 번만)
     auto_start_pending: Mutex<bool>,
+    /// 진행 중에도 닫겠다고 확인했는지
+    force_close: AtomicBool,
 }
 
 #[derive(Clone, Serialize)]
@@ -30,7 +32,13 @@ struct ProgressEvent {
 }
 
 fn emit_progress(app: &AppHandle, message: &str, percent: Option<f32>) {
-    let _ = app.emit("progress", ProgressEvent { message: message.to_string(), percent });
+    let _ = app.emit(
+        "progress",
+        ProgressEvent {
+            message: message.to_string(),
+            percent,
+        },
+    );
 }
 
 static LOGIN_SEQ: AtomicUsize = AtomicUsize::new(0);
@@ -52,7 +60,10 @@ fn login_window(app: &AppHandle, url: &str) -> Result<String, String> {
         .initialization_script(include_str!("keep_login.js"))
         .on_navigation(move |u| {
             if u.host_str() == Some(LOGIN_SUCCESS_HOST) && u.path().starts_with("/login/success") {
-                let code = u.query_pairs().find(|(k, _)| k == "code").map(|(_, v)| v.into_owned());
+                let code = u
+                    .query_pairs()
+                    .find(|(k, _)| k == "code")
+                    .map(|(_, v)| v.into_owned());
                 let _ = tx_nav.send(code);
                 return false; // 완료 페이지는 열지 않음 (DMM 플레이어 호출 방지)
             }
@@ -89,8 +100,12 @@ fn enable_password_autosave(win: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings4;
     use windows_core::Interface;
     let _ = win.with_webview(|wv| unsafe {
-        let Ok(core) = wv.controller().CoreWebView2() else { return };
-        let Ok(settings) = core.Settings() else { return };
+        let Ok(core) = wv.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
         if let Ok(s4) = settings.cast::<ICoreWebView2Settings4>() {
             let _ = s4.SetIsPasswordAutosaveEnabled(true);
             let _ = s4.SetIsGeneralAutofillEnabled(true);
@@ -147,7 +162,10 @@ fn set_auto_start(state: tauri::State<'_, AppState>, enabled: bool) -> Result<St
 }
 
 #[tauri::command]
-fn set_close_after_launch(state: tauri::State<'_, AppState>, enabled: bool) -> Result<Status, String> {
+fn set_close_after_launch(
+    state: tauri::State<'_, AppState>,
+    enabled: bool,
+) -> Result<Status, String> {
     let mut s = state.store.settings();
     s.close_after_launch = enabled;
     state.store.save_settings(&s)?;
@@ -166,7 +184,11 @@ async fn pick_game_folder(app: AppHandle, window: tauri::Window) -> Result<Statu
     let current = app.state::<AppState>().store.settings().game_path;
     let dialog_app = app.clone();
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        let mut d = dialog_app.dialog().file().set_title("게임 폴더 선택").set_parent(&window);
+        let mut d = dialog_app
+            .dialog()
+            .file()
+            .set_title("게임 폴더 선택")
+            .set_parent(&window);
         if let Some(p) = current {
             d = d.set_directory(p);
         }
@@ -176,7 +198,9 @@ async fn pick_game_folder(app: AppHandle, window: tauri::Window) -> Result<Statu
     .map_err(|e| e.to_string())?;
 
     let state = app.state::<AppState>();
-    let Some(picked) = picked else { return Ok(state.store.status()) };
+    let Some(picked) = picked else {
+        return Ok(state.store.status());
+    };
     let path: PathBuf = picked.into_path().map_err(|e| e.to_string())?;
     if !path.join("gakumas.exe").is_file() {
         return Err("이 폴더에 gakumas.exe 가 없습니다".into());
@@ -224,25 +248,55 @@ fn logout(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<Status, S
     state.store.clear_token()?;
     if let Some(w) = app.get_webview_window("main") {
         // 로그인 창과 같은 저장소를 쓰므로 DMM 로그인 상태와 저장된 비밀번호도 함께 지워짐
-        w.clear_all_browsing_data().map_err(|e| format!("로그인 정보를 지우지 못했습니다: {e}"))?;
+        w.clear_all_browsing_data()
+            .map_err(|e| format!("로그인 정보를 지우지 못했습니다: {e}"))?;
     }
     Ok(state.store.status())
+}
+
+/// 진행 중 닫기 확인 후 종료
+#[tauri::command]
+fn force_close(app: AppHandle, state: tauri::State<'_, AppState>) {
+    state.force_close.store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // 업데이트 등이 진행 중이면 바로 닫지 않고 화면에서 확인을 받음
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    if let Some(state) = window.try_state::<AppState>() {
+                        if *state.busy.lock().unwrap() && !state.force_close.load(Ordering::SeqCst)
+                        {
+                            api.prevent_close();
+                            let _ = window.emit("close-blocked", ());
+                        }
+                    }
+                }
+            }
+        })
         .setup(|app| {
             let dir = app.path().app_local_data_dir()?;
             let store = Store::new(dir.join("data"))?;
             let settings = store.settings();
             let vpngate_mode = settings.mode == launcher::MODE_VPNGATE;
-            app.manage(AppState { store, busy: Mutex::new(false), auto_start_pending: Mutex::new(settings.auto_start) });
+            app.manage(AppState {
+                store,
+                busy: Mutex::new(false),
+                auto_start_pending: Mutex::new(settings.auto_start),
+                force_close: AtomicBool::new(false),
+            });
             // 시작하자마자 VPN Gate 서버 목록을 새로 받아 둠 (게임 시작은 받는 동안에도 쓰쿠바대 서버로 먼저 시도)
             if vpngate_mode {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    let _ = handle.state::<AppState>().store.refresh_vpngate_list(Duration::ZERO);
+                    let _ = handle
+                        .state::<AppState>()
+                        .store
+                        .refresh_vpngate_list(Duration::ZERO);
                 });
             }
             Ok(())
@@ -256,7 +310,8 @@ fn main() {
             pick_game_folder,
             start_game,
             login,
-            logout
+            logout,
+            force_close
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

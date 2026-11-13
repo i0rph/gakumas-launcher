@@ -52,8 +52,14 @@ impl<'a> phy::TxToken for TxTok<'a> {
 }
 
 impl Device for QueueDevice {
-    type RxToken<'a> = RxTok where Self: 'a;
-    type TxToken<'a> = TxTok<'a> where Self: 'a;
+    type RxToken<'a>
+        = RxTok
+    where
+        Self: 'a;
+    type TxToken<'a>
+        = TxTok<'a>
+    where
+        Self: 'a;
 
     fn receive(&mut self, _t: SmolInstant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let p = self.rx.pop_front()?;
@@ -95,21 +101,33 @@ impl TunnelStack {
     pub fn new(tun: Tunnel) -> Result<Self, String> {
         let push = tun.push.clone().ok_or("tunnel has no address")?;
         let ip = push.local_ip;
-        let mut dev = QueueDevice { rx: VecDeque::new(), tx: VecDeque::new() };
+        let mut dev = QueueDevice {
+            rx: VecDeque::new(),
+            tx: VecDeque::new(),
+        };
         let mut cfg = Config::new(HardwareAddress::Ip);
         let mut seed = [0u8; 8];
         getrandom::getrandom(&mut seed).map_err(|e| e.to_string())?;
         cfg.random_seed = u64::from_le_bytes(seed);
         let mut iface = Interface::new(cfg, &mut dev, SmolInstant::from_millis(0));
         iface.update_ip_addrs(|addrs| {
-            let _ = addrs.push(IpCidr::new(IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), push.prefix_len));
+            let _ = addrs.push(IpCidr::new(
+                IpAddress::v4(ip[0], ip[1], ip[2], ip[3]),
+                push.prefix_len,
+            ));
         });
         let gw = push.gateway.unwrap_or([ip[0], ip[1], ip[2], 1]);
         iface
             .routes_mut()
             .add_default_ipv4_route(Ipv4Address::new(gw[0], gw[1], gw[2], gw[3]))
             .map_err(|e| format!("route: {e:?}"))?;
-        Ok(Self { tun, dev, iface, sockets: SocketSet::new(Vec::new()), epoch: Instant::now() })
+        Ok(Self {
+            tun,
+            dev,
+            iface,
+            sockets: SocketSet::new(Vec::new()),
+            epoch: Instant::now(),
+        })
     }
 
     fn now(&self) -> SmolInstant {
@@ -128,7 +146,8 @@ impl TunnelStack {
             .poll_delay(now, &self.sockets)
             .map(|d| Duration::from_millis(d.total_millis()))
             .unwrap_or(Duration::from_millis(20));
-        self.tun.pump(delay.clamp(Duration::from_millis(1), Duration::from_millis(20)))?;
+        self.tun
+            .pump(delay.clamp(Duration::from_millis(1), Duration::from_millis(20)))?;
         while let Some(p) = self.tun.take_inbound() {
             self.dev.rx.push_back(p);
         }
@@ -152,8 +171,12 @@ impl TunnelStack {
         let mut r = [0u8; 2];
         getrandom::getrandom(&mut r).map_err(|e| e.to_string())?;
         let local_port = 49152 + (u16::from_le_bytes(r) % 16000);
-        sock.connect(self.iface.context(), (IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), port), local_port)
-            .map_err(|e| format!("TCP connect: {e:?}"))?;
+        sock.connect(
+            self.iface.context(),
+            (IpAddress::v4(ip[0], ip[1], ip[2], ip[3]), port),
+            local_port,
+        )
+        .map_err(|e| format!("TCP connect: {e:?}"))?;
         let h = self.sockets.add(sock);
         let result = self.exchange(h, host, tls, req, timeout);
         self.sockets.get_mut::<tcp::Socket>(h).abort();
@@ -173,20 +196,33 @@ impl TunnelStack {
         let deadline = Instant::now() + timeout;
         let mut conn = match tls {
             Some(cfg) => {
-                let name = ServerName::try_from(host.to_string()).map_err(|e| format!("server name: {e}"))?;
-                let mut c = ClientConnection::new(cfg, name).map_err(|e| format!("TLS init: {e}"))?;
-                c.writer().write_all(req).map_err(|e| format!("TLS write: {e}"))?;
+                let name = ServerName::try_from(host.to_string())
+                    .map_err(|e| format!("server name: {e}"))?;
+                let mut c =
+                    ClientConnection::new(cfg, name).map_err(|e| format!("TLS init: {e}"))?;
+                c.writer()
+                    .write_all(req)
+                    .map_err(|e| format!("TLS write: {e}"))?;
                 Some(c)
             }
             None => None,
         };
-        let mut out_pending: Vec<u8> = if conn.is_none() { req.to_vec() } else { Vec::new() };
+        let mut out_pending: Vec<u8> = if conn.is_none() {
+            req.to_vec()
+        } else {
+            Vec::new()
+        };
         let mut resp = Vec::new();
         let mut buf = vec![0u8; 16384];
         let mut connected = false;
         loop {
             if Instant::now() >= deadline {
-                return Err(if connected { "response timed out" } else { "TCP connect timed out" }.into());
+                return Err(if connected {
+                    "response timed out"
+                } else {
+                    "TCP connect timed out"
+                }
+                .into());
             }
             self.step()?;
             let sock = self.sockets.get_mut::<tcp::Socket>(h);
@@ -195,16 +231,21 @@ impl TunnelStack {
             }
             if let Some(c) = conn.as_mut() {
                 while c.wants_write() {
-                    c.write_tls(&mut out_pending).map_err(|e| format!("TLS write: {e}"))?;
+                    c.write_tls(&mut out_pending)
+                        .map_err(|e| format!("TLS write: {e}"))?;
                 }
             }
             if sock.can_send() && !out_pending.is_empty() {
-                let n = sock.send_slice(&out_pending).map_err(|e| format!("TCP send: {e:?}"))?;
+                let n = sock
+                    .send_slice(&out_pending)
+                    .map_err(|e| format!("TCP send: {e:?}"))?;
                 out_pending.drain(..n);
             }
             let mut tls_closed = false;
             while sock.can_recv() {
-                let n = sock.recv_slice(&mut buf).map_err(|e| format!("TCP recv: {e:?}"))?;
+                let n = sock
+                    .recv_slice(&mut buf)
+                    .map_err(|e| format!("TCP recv: {e:?}"))?;
                 if n == 0 {
                     break;
                 }
@@ -236,13 +277,22 @@ impl TunnelStack {
             }
             let remote_closed = matches!(
                 sock.state(),
-                tcp::State::CloseWait | tcp::State::LastAck | tcp::State::Closing | tcp::State::TimeWait | tcp::State::Closed
+                tcp::State::CloseWait
+                    | tcp::State::LastAck
+                    | tcp::State::Closing
+                    | tcp::State::TimeWait
+                    | tcp::State::Closed
             );
             if remote_closed && !sock.can_recv() {
                 if !resp.is_empty() {
                     return Ok(resp);
                 }
-                return Err(if connected { "connection closed without a response" } else { "connection refused" }.into());
+                return Err(if connected {
+                    "connection closed without a response"
+                } else {
+                    "connection refused"
+                }
+                .into());
             }
         }
     }

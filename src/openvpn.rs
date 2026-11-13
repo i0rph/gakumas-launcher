@@ -42,6 +42,8 @@ const PEER_INFO: &str = "IV_VER=2.5.0\nIV_PLAT=win\n";
 /// 제어 채널 패킷 하나에 싣는 TLS 바이트 수
 const CONTROL_CHUNK: usize = 1000;
 
+/// 서버 key-method 2 응답의 난수 두 개 (random1, random2)
+type ServerRandoms = ([u8; 32], [u8; 32]);
 type HmacSha1 = Hmac<Sha1>;
 type HmacMd5 = Hmac<Md5>;
 type AesCbcEnc = cbc::Encryptor<Aes128>;
@@ -120,7 +122,11 @@ fn parse_control(p: &[u8]) -> Option<Control> {
     } else {
         None
     };
-    Some(Control { sid, pid, payload: p.get(off..)?.to_vec() })
+    Some(Control {
+        sid,
+        pid,
+        payload: p.get(off..)?.to_vec(),
+    })
 }
 
 fn parse_v4(s: &str) -> Option<[u8; 4]> {
@@ -148,7 +154,7 @@ fn p_hash<M: Mac + KeyInit>(secret: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
 }
 
 fn prf(secret: &[u8], seed: &[u8], len: usize) -> Vec<u8> {
-    let half = (secret.len() + 1) / 2;
+    let half = secret.len().div_ceil(2);
     let a = p_hash::<HmacMd5>(&secret[..half], seed, len);
     let b = p_hash::<HmacSha1>(&secret[secret.len() - half..], seed, len);
     a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect()
@@ -171,7 +177,13 @@ impl ServerCertVerifier for RecordingVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
-        let result = self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now);
+        let result = self.inner.verify_server_cert(
+            end_entity,
+            intermediates,
+            server_name,
+            ocsp_response,
+            now,
+        );
         *self.status.lock().unwrap() = match &result {
             Ok(_) => "verified".to_string(),
             Err(e) => format!("not verified ({e})"),
@@ -208,7 +220,11 @@ impl ServerCertVerifier for RecordingVerifier {
 struct FixedClientCert(Arc<rustls::sign::CertifiedKey>);
 
 impl rustls::client::ResolvesClientCert for FixedClientCert {
-    fn resolve(&self, _hints: &[&[u8]], _schemes: &[SignatureScheme]) -> Option<Arc<rustls::sign::CertifiedKey>> {
+    fn resolve(
+        &self,
+        _hints: &[&[u8]],
+        _schemes: &[SignatureScheme],
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
         Some(self.0.clone())
     }
 
@@ -230,8 +246,12 @@ fn build_tls_config(cfg: &OvpnConfig, status: Arc<Mutex<String>>) -> Result<Clie
     let key = rustls_pemfile::private_key(&mut cfg.key_pem.as_bytes())
         .map_err(|e| format!("client key: {e}"))?
         .ok_or("client key missing")?;
-    let signing_key = rustls::crypto::ring::sign::any_supported_type(&key).map_err(|e| format!("client key: {e}"))?;
-    let client_cert = FixedClientCert(Arc::new(rustls::sign::CertifiedKey::new(certs, signing_key)));
+    let signing_key = rustls::crypto::ring::sign::any_supported_type(&key)
+        .map_err(|e| format!("client key: {e}"))?;
+    let client_cert = FixedClientCert(Arc::new(rustls::sign::CertifiedKey::new(
+        certs,
+        signing_key,
+    )));
     let inner = WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
         .build()
         .map_err(|e| format!("verifier: {e}"))?;
@@ -245,25 +265,36 @@ fn build_tls_config(cfg: &OvpnConfig, status: Arc<Mutex<String>>) -> Result<Clie
 
 impl Tunnel {
     /// VPN 서버에 접속해 터널 주소를 받을 때까지 진행
-    pub fn connect(cfg: &OvpnConfig, tls_name: &str, log: &mut dyn FnMut(String)) -> Result<Tunnel, String> {
+    pub fn connect(
+        cfg: &OvpnConfig,
+        tls_name: &str,
+        log: &mut dyn FnMut(String),
+    ) -> Result<Tunnel, String> {
         if !cfg.proto.starts_with("tcp") {
             return Err(format!("unsupported protocol '{}' (TCP only)", cfg.proto));
         }
-        if !cfg.cipher.eq_ignore_ascii_case("AES-128-CBC") || !cfg.auth.eq_ignore_ascii_case("SHA1") {
-            return Err(format!("unsupported cipher/auth {}/{}", cfg.cipher, cfg.auth));
+        if !cfg.cipher.eq_ignore_ascii_case("AES-128-CBC") || !cfg.auth.eq_ignore_ascii_case("SHA1")
+        {
+            return Err(format!(
+                "unsupported cipher/auth {}/{}",
+                cfg.cipher, cfg.auth
+            ));
         }
         let addr: SocketAddr = format!("{}:{}", cfg.remote_ip, cfg.port)
             .parse()
             .map_err(|e| format!("bad server address: {e}"))?;
-        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10)).map_err(|e| format!("TCP connect: {e}"))?;
+        let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+            .map_err(|e| format!("TCP connect: {e}"))?;
         stream.set_nodelay(true).ok();
         stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
         log(format!("TCP connected to {addr}"));
 
         let status = Arc::new(Mutex::new(String::from("not checked")));
         let tls_cfg = build_tls_config(cfg, status.clone())?;
-        let name = ServerName::try_from(tls_name.to_string()).map_err(|e| format!("server name: {e}"))?;
-        let tls = ClientConnection::new(Arc::new(tls_cfg), name).map_err(|e| format!("TLS init: {e}"))?;
+        let name =
+            ServerName::try_from(tls_name.to_string()).map_err(|e| format!("server name: {e}"))?;
+        let tls =
+            ClientConnection::new(Arc::new(tls_cfg), name).map_err(|e| format!("TLS init: {e}"))?;
 
         let mut t = Tunnel {
             stream,
@@ -288,7 +319,9 @@ impl Tunnel {
         t.send_frame(&pkt)?;
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let p = t.read_frame_until(deadline)?.ok_or("no reply to session reset")?;
+            let p = t
+                .read_frame_until(deadline)?
+                .ok_or("no reply to session reset")?;
             if !p.is_empty() && p[0] >> 3 == OP_HARD_RESET_SERVER_V2 {
                 let c = parse_control(&p).ok_or("malformed reset reply")?;
                 let pid = c.pid.unwrap_or(0);
@@ -313,7 +346,10 @@ impl Tunnel {
         t.server_cert_status = status.lock().unwrap().clone();
         log(format!(
             "TLS handshake done ({:?}); VPN server certificate {}",
-            t.tls.protocol_version().map(|v| format!("{v:?}")).unwrap_or_default(),
+            t.tls
+                .protocol_version()
+                .map(|v| format!("{v:?}"))
+                .unwrap_or_default(),
             t.server_cert_status
         ));
 
@@ -328,7 +364,10 @@ impl Tunnel {
         write_string(&mut m, OPTIONS_STRING);
         m.extend_from_slice(&[0, 0, 0, 0]); // 사용자 이름/비밀번호 없음
         write_string(&mut m, PEER_INFO);
-        t.tls.writer().write_all(&m).map_err(|e| format!("TLS write: {e}"))?;
+        t.tls
+            .writer()
+            .write_all(&m)
+            .map_err(|e| format!("TLS write: {e}"))?;
         t.flush_tls()?;
         let deadline = Instant::now() + Duration::from_secs(15);
         let (sr1, sr2) = loop {
@@ -341,7 +380,10 @@ impl Tunnel {
             }
         };
         t.derive_keys(&pre_master, &r1, &r2, &sr1, &sr2);
-        log(format!("key exchange done (server options: {})", t.server_options));
+        log(format!(
+            "key exchange done (server options: {})",
+            t.server_options
+        ));
 
         // 4) 터널 주소 받기
         let deadline = Instant::now() + Duration::from_secs(20);
@@ -355,7 +397,10 @@ impl Tunnel {
                 return Err("no PUSH_REPLY from server".into());
             }
             if now >= next_request {
-                t.tls.writer().write_all(b"PUSH_REQUEST\0").map_err(|e| format!("TLS write: {e}"))?;
+                t.tls
+                    .writer()
+                    .write_all(b"PUSH_REQUEST\0")
+                    .map_err(|e| format!("TLS write: {e}"))?;
                 t.flush_tls()?;
                 next_request = now + Duration::from_secs(3);
             }
@@ -382,7 +427,9 @@ impl Tunnel {
         let mut f = Vec::with_capacity(pkt.len() + 2);
         f.extend_from_slice(&(pkt.len() as u16).to_be_bytes());
         f.extend_from_slice(pkt);
-        self.stream.write_all(&f).map_err(|e| format!("VPN send: {e}"))
+        self.stream
+            .write_all(&f)
+            .map_err(|e| format!("VPN send: {e}"))
     }
 
     fn read_frame_until(&mut self, deadline: Instant) -> Result<Option<Vec<u8>>, String> {
@@ -400,12 +447,17 @@ impl Tunnel {
                 return Ok(None);
             }
             let wait = (deadline - now).max(Duration::from_millis(1));
-            self.stream.set_read_timeout(Some(wait)).map_err(|e| e.to_string())?;
+            self.stream
+                .set_read_timeout(Some(wait))
+                .map_err(|e| e.to_string())?;
             let mut tmp = [0u8; 16384];
             match self.stream.read(&mut tmp) {
                 Ok(0) => return Err("VPN server closed the connection".into()),
                 Ok(n) => self.rbuf.extend_from_slice(&tmp[..n]),
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                Err(e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
                     return Ok(None)
                 }
                 Err(e) => return Err(format!("VPN connection: {e}")),
@@ -439,7 +491,9 @@ impl Tunnel {
     fn flush_tls(&mut self) -> Result<(), String> {
         while self.tls.wants_write() {
             let mut out = Vec::new();
-            self.tls.write_tls(&mut out).map_err(|e| format!("TLS write: {e}"))?;
+            self.tls
+                .write_tls(&mut out)
+                .map_err(|e| format!("TLS write: {e}"))?;
             for chunk in out.chunks(CONTROL_CHUNK) {
                 let pkt = self.control_packet(OP_CONTROL_V1, chunk);
                 self.send_frame(&pkt)?;
@@ -470,8 +524,12 @@ impl Tunnel {
                 self.next_remote_pid = pid + 1;
                 let mut rd: &[u8] = &c.payload;
                 while !rd.is_empty() {
-                    self.tls.read_tls(&mut rd).map_err(|e| format!("TLS read: {e}"))?;
-                    self.tls.process_new_packets().map_err(|e| format!("TLS: {e}"))?;
+                    self.tls
+                        .read_tls(&mut rd)
+                        .map_err(|e| format!("TLS read: {e}"))?;
+                    self.tls
+                        .process_new_packets()
+                        .map_err(|e| format!("TLS: {e}"))?;
                 }
                 let mut buf = [0u8; 4096];
                 loop {
@@ -494,13 +552,16 @@ impl Tunnel {
     }
 
     /// 서버의 key-method 2 응답에서 난수 두 개를 꺼냄
-    fn take_server_key_method(&mut self) -> Result<Option<([u8; 32], [u8; 32])>, String> {
+    fn take_server_key_method(&mut self) -> Result<Option<ServerRandoms>, String> {
         let p = &self.plain;
         if p.len() < 71 {
             return Ok(None);
         }
         if p[0..4] != [0, 0, 0, 0] || p[4] != 2 {
-            return Err(format!("unexpected key exchange message (starts {:02x?})", &p[..5]));
+            return Err(format!(
+                "unexpected key exchange message (starts {:02x?})",
+                &p[..5]
+            ));
         }
         let olen = u16::from_be_bytes([p[69], p[70]]) as usize;
         if p.len() < 71 + olen {
@@ -510,7 +571,9 @@ impl Tunnel {
         r1.copy_from_slice(&p[5..37]);
         let mut r2 = [0u8; 32];
         r2.copy_from_slice(&p[37..69]);
-        self.server_options = String::from_utf8_lossy(&p[71..71 + olen]).trim_end_matches('\0').to_string();
+        self.server_options = String::from_utf8_lossy(&p[71..71 + olen])
+            .trim_end_matches('\0')
+            .to_string();
         self.plain.drain(..71 + olen);
         Ok(Some((r1, r2)))
     }
@@ -530,7 +593,14 @@ impl Tunnel {
         Ok(None)
     }
 
-    fn derive_keys(&mut self, pre: &[u8; 48], cr1: &[u8; 32], cr2: &[u8; 32], sr1: &[u8; 32], sr2: &[u8; 32]) {
+    fn derive_keys(
+        &mut self,
+        pre: &[u8; 48],
+        cr1: &[u8; 32],
+        cr2: &[u8; 32],
+        sr1: &[u8; 32],
+        sr2: &[u8; 32],
+    ) {
         let mut seed = b"OpenVPN master secret".to_vec();
         seed.extend_from_slice(cr1);
         seed.extend_from_slice(sr1);
@@ -542,7 +612,12 @@ impl Tunnel {
         seed.extend_from_slice(&self.remote_sid);
         let kb = prf(&master, &seed, 256);
         // key[0] = 클라이언트→서버, key[1] = 서버→클라이언트. 각 key 는 cipher 64 바이트 + hmac 64 바이트
-        let mut k = DataKeys { enc_cipher: [0; 16], enc_hmac: [0; 20], dec_cipher: [0; 16], dec_hmac: [0; 20] };
+        let mut k = DataKeys {
+            enc_cipher: [0; 16],
+            enc_hmac: [0; 20],
+            dec_cipher: [0; 16],
+            dec_hmac: [0; 20],
+        };
         k.enc_cipher.copy_from_slice(&kb[0..16]);
         k.enc_hmac.copy_from_slice(&kb[64..84]);
         k.dec_cipher.copy_from_slice(&kb[128..144]);
@@ -565,7 +640,9 @@ impl Tunnel {
                 Some("route-gateway") => gw = parts.get(1).and_then(|s| parse_v4(s)),
                 Some("topology") => topology = parts.get(1).copied().unwrap_or("").to_string(),
                 Some("comp-lzo") => self.comp_lzo = true,
-                Some("compress") => return Err("server requires 'compress' framing (not supported)".into()),
+                Some("compress") => {
+                    return Err("server requires 'compress' framing (not supported)".into())
+                }
                 Some("cipher") => {
                     if let Some(c) = parts.get(1) {
                         if !c.eq_ignore_ascii_case("AES-128-CBC") {
@@ -586,14 +663,22 @@ impl Tunnel {
             Some(peer) => (32, gw.or(Some(peer))),
             None => (32, gw),
         };
-        self.push = Some(PushInfo { local_ip: ip, prefix_len, gateway, topology, comp_lzo: self.comp_lzo });
+        self.push = Some(PushInfo {
+            local_ip: ip,
+            prefix_len,
+            gateway,
+            topology,
+            comp_lzo: self.comp_lzo,
+        });
         Ok(())
     }
 
     // --- 데이터 채널 ---
 
     fn decrypt_data(&self, p: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        let Some(k) = self.keys.as_ref() else { return Ok(None) };
+        let Some(k) = self.keys.as_ref() else {
+            return Ok(None);
+        };
         let off = if p[0] >> 3 == OP_DATA_V2 { 4 } else { 1 };
         if p.len() < off + 20 + 16 + 16 {
             return Err("short data packet".into());

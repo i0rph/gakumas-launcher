@@ -481,6 +481,17 @@
   });
 
   $('winClose').onclick = () => appWindow.close();
+  listen('close-blocked', async () => {
+    const ok = await openModal({
+      title: '종료',
+      body: textBody('진행 중인 작업이 있습니다.\n지금 닫을까요?'),
+      buttons: [
+        { label: '취소', kind: 'secondary', icon: 'cross', value: false },
+        { label: '닫기', kind: 'primary', icon: 'check', value: true },
+      ],
+    });
+    if (ok) invoke('force_close');
+  });
   $('winMin').onclick = () => appWindow.minimize();
 
   (async () => {

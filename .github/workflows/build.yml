@@ -7,11 +7,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
-    permissions:
-      contents: write # 태그 빌드에서 릴리스를 만들 때 필요
     steps:
       - uses: actions/checkout@v7
 
@@ -34,9 +35,19 @@ jobs:
           path: dist/GakumasLauncher.exe
           if-no-files-found: error
 
-      - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: GakumasLauncher
+          path: dist
+
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/GakumasLauncher.exe
           generate_release_notes: true

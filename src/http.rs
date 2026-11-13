@@ -49,7 +49,9 @@ pub fn find(h: &[u8], n: &[u8]) -> Option<usize> {
 
 /// 응답을 끝까지 받았는지 (Content-Length 또는 chunked 끝 표시 기준)
 pub fn is_complete(resp: &[u8]) -> bool {
-    let Some(he) = find(resp, b"\r\n\r\n") else { return false };
+    let Some(he) = find(resp, b"\r\n\r\n") else {
+        return false;
+    };
     let head = String::from_utf8_lossy(&resp[..he]).to_ascii_lowercase();
     let body = &resp[he + 4..];
     if head.contains("transfer-encoding: chunked") {
@@ -75,7 +77,10 @@ pub fn parse_response(resp: &[u8]) -> Result<(u16, Vec<u8>), String> {
         .and_then(|s| s.parse().ok())
         .ok_or("bad HTTP status line")?;
     let body = &resp[he + 4..];
-    let body = if head.to_ascii_lowercase().contains("transfer-encoding: chunked") {
+    let body = if head
+        .to_ascii_lowercase()
+        .contains("transfer-encoding: chunked")
+    {
         dechunk(body).ok_or("incomplete chunked body")?
     } else {
         body.to_vec()
@@ -87,7 +92,11 @@ fn dechunk(mut b: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     loop {
         let le = find(b, b"\r\n")?;
-        let size_str = std::str::from_utf8(&b[..le]).ok()?.split(';').next()?.trim();
+        let size_str = std::str::from_utf8(&b[..le])
+            .ok()?
+            .split(';')
+            .next()?
+            .trim();
         let size = usize::from_str_radix(size_str, 16).ok()?;
         b = &b[le + 2..];
         if size == 0 {

@@ -44,7 +44,9 @@ fn main() {
         Some(p) => println!("{:>6} ms  [{p:5.1}%] {m}", t0.elapsed().as_millis()),
         None => println!("{:>6} ms  {m}", t0.elapsed().as_millis()),
     };
-    let no_login = |_: &str| -> Result<String, String> { Err("이 시험 프로그램은 로그인 창을 띄울 수 없습니다".into()) };
+    let no_login = |_: &str| -> Result<String, String> {
+        Err("이 시험 프로그램은 로그인 창을 띄울 수 없습니다".into())
+    };
     match launcher::start_game(&store, &no_login, &progress, launch) {
         Ok(m) => println!("\n결과: {m}"),
         Err(e) => {

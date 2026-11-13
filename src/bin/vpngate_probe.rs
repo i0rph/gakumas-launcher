@@ -25,9 +25,16 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--data-dir" => data_dir = PathBuf::from(args.next().ok_or("--data-dir needs a value")?),
+            "--data-dir" => {
+                data_dir = PathBuf::from(args.next().ok_or("--data-dir needs a value")?)
+            }
             "--server" => only = Some(args.next().ok_or("--server needs a value")?),
-            "--tries" => tries = args.next().and_then(|v| v.parse().ok()).ok_or("--tries needs a number")?,
+            "--tries" => {
+                tries = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--tries needs a number")?
+            }
             other => return Err(format!("unknown argument {other}")),
         }
     }
@@ -41,8 +48,16 @@ fn run() -> Result<(), String> {
         .unwrap_or(serde_json::Value::Null);
     println!(
         "로그인 토큰: {} / 기기 정보: {}",
-        if token.is_some() { "있음 (값은 표시하지 않음)" } else { "없음 - DMM API 시험은 건너뜀" },
-        if device.is_object() { "있음" } else { "없음" }
+        if token.is_some() {
+            "있음 (값은 표시하지 않음)"
+        } else {
+            "없음 - DMM API 시험은 건너뜀"
+        },
+        if device.is_object() {
+            "있음"
+        } else {
+            "없음"
+        }
     );
 
     println!("\n[1] VPN Gate 서버 목록 받는 중...");
@@ -54,17 +69,29 @@ fn run() -> Result<(), String> {
         .filter_map(|s| vpngate::parse_config(&s.config_text).ok().map(|c| (s, c)))
         .filter(|(_, c)| c.proto.starts_with("tcp"))
         .collect();
-    candidates.sort_by(|a, b| b.0.is_official().cmp(&a.0.is_official()).then(b.0.score.cmp(&a.0.score)));
+    candidates.sort_by(|a, b| {
+        b.0.is_official()
+            .cmp(&a.0.is_official())
+            .then(b.0.score.cmp(&a.0.score))
+    });
     if let Some(name) = &only {
         candidates.retain(|(s, _)| &s.host_name == name);
     }
-    println!("    일본 TCP 서버 {}개 ({} ms)", candidates.len(), t0.elapsed().as_millis());
+    println!(
+        "    일본 TCP 서버 {}개 ({} ms)",
+        candidates.len(),
+        t0.elapsed().as_millis()
+    );
 
     for (server, cfg) in candidates.iter().take(tries) {
         println!(
             "\n[2] {} ({}) {}:{} 연결 시도",
             server.host_name,
-            if server.is_official() { "쓰쿠바대 운영" } else { "자원봉사자 운영" },
+            if server.is_official() {
+                "쓰쿠바대 운영"
+            } else {
+                "자원봉사자 운영"
+            },
             cfg.remote_ip,
             cfg.port
         );
@@ -102,21 +129,36 @@ fn run() -> Result<(), String> {
                 "motherboard": device["motherboard"], "user_os": "win"
             })
             .to_string();
-            let calls = [("userinfo", "/v5/userinfo", "{}".to_string()), ("launch/cl", "/v5/r2/launch/cl", launch_body)];
+            let calls = [
+                ("userinfo", "/v5/userinfo", "{}".to_string()),
+                ("launch/cl", "/v5/r2/launch/cl", launch_body),
+            ];
             let tls = http::dmm_tls_config();
             for (name, path, body) in calls {
                 let t1 = Instant::now();
                 let req = http::dmm_post(path, &body, Some(tok));
-                match stack.request(http::DMM_HOST, 443, Some(tls.clone()), &req, Duration::from_secs(30)) {
+                match stack.request(
+                    http::DMM_HOST,
+                    443,
+                    Some(tls.clone()),
+                    &req,
+                    Duration::from_secs(30),
+                ) {
                     Ok(r) => {
                         let (status, body) = http::parse_response(&r)?;
-                        let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-                        let mut line = format!("    {name}: HTTP {status}, result_code={}", v["result_code"]);
+                        let v: serde_json::Value =
+                            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+                        let mut line = format!(
+                            "    {name}: HTTP {status}, result_code={}",
+                            v["result_code"]
+                        );
                         if name == "launch/cl" && v["result_code"] == 100 {
                             let args = v["data"]["execute_args"].as_str().unwrap_or("");
                             let names: Vec<&str> = args
                                 .split_whitespace()
-                                .filter_map(|a| a.strip_prefix('/').and_then(|a| a.split('=').next()))
+                                .filter_map(|a| {
+                                    a.strip_prefix('/').and_then(|a| a.split('=').next())
+                                })
                                 .collect();
                             line.push_str(&format!(
                                 " (실행 인자 항목: {}, 최신 버전 {})",
