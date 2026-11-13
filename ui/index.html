@@ -116,6 +116,8 @@
   .tiles.three .tile[aria-checked="true"] .radio::after { width: 10px; height: 10px; }
   .vpn-file { margin-top: 12px; }
   .vpn-file[hidden] { display: none; }
+  .mode-warn { margin: 12px 2px 0; font-size: 13.5px; line-height: 1.6; font-weight: 800; color: var(--red); text-align: center; white-space: pre-line; }
+  .mode-warn[hidden] { display: none; }
 
   /* 입력칸 (VPN 계정) */
   .field {
@@ -269,6 +271,8 @@
         <div class="item-main"><div class="item-title">VPN 파일</div><div class="item-sub path" id="vpnName">-</div></div>
         <div class="item-actions"><button class="pill" id="vpnAuth" hidden>계정</button><button class="pill" id="vpnPick">파일 선택</button></div>
       </div>
+      <p class="mode-warn" id="directWarn" hidden>런처가 VPN 없이 PC 인터넷을 그대로 씁니다.
+일본 밖이라면 VPN 앱으로 일본에 먼저 연결하세요.</p>
     </div>
   </section>
 
@@ -393,6 +397,7 @@
     vpnState = s;
     const fileMode = s.mode === 'file';
     $('vpnRow').hidden = !fileMode;
+    $('directWarn').hidden = s.mode !== 'direct';
     $('vpnName').textContent = s.vpn_file || '선택 안 됨';
     $('vpnName').title = s.vpn_file || '';
     $('vpnAuth').hidden = !s.vpn_needs_auth;
