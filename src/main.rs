@@ -321,6 +321,24 @@ fn force_close(app: AppHandle, state: tauri::State<'_, AppState>) {
     app.exit(0);
 }
 
+/// 화면(작업 표시줄 제외)보다 창이 크면 높이를 줄여 화면 안에 들어오게 함.
+/// 이때만 내용이 길면 스크롤이 생기고, 보통 화면에서는 기본 높이(스크롤 없음)를 그대로 씀
+fn fit_to_screen(win: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = win.current_monitor() else {
+        return;
+    };
+    let scale = monitor.scale_factor();
+    let max_h = monitor.work_area().size.height as f64 / scale - 16.0;
+    let Ok(size) = win.outer_size() else {
+        return;
+    };
+    let (w, h) = (size.width as f64 / scale, size.height as f64 / scale);
+    if h > max_h {
+        let _ = win.set_size(tauri::LogicalSize::new(w, max_h.max(600.0)));
+        let _ = win.center();
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -339,6 +357,9 @@ fn main() {
             }
         })
         .setup(|app| {
+            if let Some(win) = app.get_webview_window("main") {
+                fit_to_screen(&win);
+            }
             let dir = app.path().app_local_data_dir()?;
             let store = Store::new(dir.join("data"))?;
             let settings = store.settings();

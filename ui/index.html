@@ -109,11 +109,14 @@
     border: 2px solid #b9b5b2; background: #fff;
   }
   .tile[aria-checked="true"] .radio::after { content: ""; width: 12px; height: 12px; border-radius: 50%; background: var(--dot); }
-  /* 타일 3개일 때는 조금 촘촘하게 */
-  .tiles.three { grid-template-columns: repeat(3, 1fr); gap: 8px; }
-  .tiles.three .tile { gap: 8px; padding: 0 10px; font-size: 15.5px; white-space: nowrap; }
-  .tiles.three .radio { width: 20px; height: 20px; }
-  .tiles.three .tile[aria-checked="true"] .radio::after { width: 10px; height: 10px; }
+  /* 타일 3개: 한 줄에 들어가면 같은 폭으로, 좁아지면 다음 줄로 넘김 (글자가 넘치지 않음) */
+  .tiles.three { display: flex; flex-wrap: wrap; gap: 8px; }
+  .tiles.three .tile {
+    flex: 1 1 0; min-width: max-content; justify-content: flex-start;
+    gap: 6px; padding: 0 9px; font-size: 15px; white-space: nowrap;
+  }
+  .tiles.three .radio { width: 18px; height: 18px; }
+  .tiles.three .tile[aria-checked="true"] .radio::after { width: 9px; height: 9px; }
   .vpn-file { margin-top: 12px; }
   .vpn-file[hidden] { display: none; }
   .mode-warn { margin: 12px 2px 0; font-size: 13.5px; line-height: 1.6; font-weight: 800; color: var(--red); text-align: center; white-space: pre-line; }
